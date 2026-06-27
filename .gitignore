@@ -1,0 +1,5 @@
+target/
+dist/
+*.exe
+local-ai-launcher-config.json
+.superpowers/
