@@ -119,15 +119,48 @@ pub fn build_args(
     if preset.cpu_moe {
         args.push("--cpu-moe".to_string());
     }
-    for line in preset
+    for part in preset
         .extra_args
         .lines()
         .map(str::trim)
         .filter(|s| !s.is_empty())
+        .flat_map(split_extra_args)
     {
-        args.push(line.to_string());
+        args.push(part);
     }
     args
+}
+
+fn split_extra_args(line: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut escape = false;
+
+    for ch in line.chars() {
+        if escape {
+            current.push(ch);
+            escape = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_quotes => escape = true,
+            '"' => in_quotes = !in_quotes,
+            ch if ch.is_whitespace() && !in_quotes => {
+                if !current.is_empty() {
+                    result.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+    if escape {
+        current.push('\\');
+    }
+    if !current.is_empty() {
+        result.push(current);
+    }
+    result
 }
 
 pub fn command_preview(args: &[String], llama_cpp_dir: &Path) -> String {
@@ -170,5 +203,39 @@ fn quote_arg(value: &str) -> String {
         format!("\"{value}\"")
     } else {
         value.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn splits_extra_args_by_whitespace() {
+        assert_eq!(split_extra_args("-c 1"), vec!["-c", "1"]);
+    }
+
+    #[test]
+    fn keeps_quoted_extra_arg_values_together() {
+        assert_eq!(
+            split_extra_args("--alias \"local model\""),
+            vec!["--alias", "local model"]
+        );
+    }
+
+    #[test]
+    fn previews_split_extra_args_without_wrapping_pair_as_single_arg() {
+        let preview = command_preview(
+            &[
+                "llama-server.exe".to_string(),
+                "-m".to_string(),
+                "model.gguf".to_string(),
+                "-c".to_string(),
+                "1".to_string(),
+            ],
+            Path::new("C:\\llama"),
+        );
+        assert!(preview.contains("  -c 1"));
+        assert!(!preview.contains("\"-c 1\""));
     }
 }
