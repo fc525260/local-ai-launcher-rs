@@ -1,5 +1,7 @@
 # 本地 AI 启动器
 
+![界面截图](UI.png)
+
 Rust/egui 编写的 llama.cpp 本地模型 GUI 启动器。
 
 ## 功能
