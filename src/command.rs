@@ -178,7 +178,11 @@ pub fn command_preview(args: &[String], llama_cpp_dir: &Path) -> String {
         let current = &display[idx];
         if current.starts_with('-') && idx + 1 < display.len() && !display[idx + 1].starts_with('-')
         {
-            lines.push(format!("  {} {}", current, quote_arg(&display[idx + 1])));
+            lines.push(format!(
+                "  {} {}",
+                current,
+                quote_arg_for_flag(current, &display[idx + 1])
+            ));
             idx += 2;
         } else {
             lines.push(format!("  {}", quote_arg(current)));
@@ -199,11 +203,23 @@ pub fn bat_script(args: &[String], llama_cpp_dir: &Path) -> String {
 }
 
 fn quote_arg(value: &str) -> String {
-    if value.contains(' ') || value.contains('&') || value.contains('(') || value.contains(')') {
+    if should_quote_arg(value) {
         format!("\"{value}\"")
     } else {
         value.to_string()
     }
+}
+
+fn quote_arg_for_flag(flag: &str, value: &str) -> String {
+    if matches!(flag, "-m" | "-md" | "--mmproj") {
+        format!("\"{value}\"")
+    } else {
+        quote_arg(value)
+    }
+}
+
+fn should_quote_arg(value: &str) -> bool {
+    value.contains(' ') || value.contains('&') || value.contains('(') || value.contains(')')
 }
 
 #[cfg(test)]
@@ -237,5 +253,24 @@ mod tests {
         );
         assert!(preview.contains("  -c 1"));
         assert!(!preview.contains("\"-c 1\""));
+    }
+
+    #[test]
+    fn quotes_model_paths_after_model_flags() {
+        let preview = command_preview(
+            &[
+                "llama-server.exe".to_string(),
+                "-m".to_string(),
+                "model.gguf".to_string(),
+                "-md".to_string(),
+                "draft.gguf".to_string(),
+                "--mmproj".to_string(),
+                "mmproj.gguf".to_string(),
+            ],
+            Path::new("C:\\llama"),
+        );
+        assert!(preview.contains("  -m \"model.gguf\""));
+        assert!(preview.contains("  -md \"draft.gguf\""));
+        assert!(preview.contains("  --mmproj \"mmproj.gguf\""));
     }
 }
