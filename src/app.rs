@@ -1,6 +1,8 @@
 use crate::command::{bat_script, build_args, command_preview, llama_server_path};
 use crate::config::{load_config, save_config, AppConfig, ManualModel, Preset};
-use crate::discovery::{discover_configured_models, ModelInfo};
+use crate::discovery::{
+    discover_configured_models, discover_draft_models, DraftModelInfo, ModelInfo,
+};
 use crate::server::{self, ServerEvent, ServerProcess};
 use eframe::egui::{
     self, Color32, CornerRadius, CursorIcon, FontId, PointerButton, RichText, Stroke, Vec2,
@@ -190,6 +192,7 @@ pub struct LauncherApp {
     dragging_model: Option<String>,
     show_log_window: bool,
     active_preset_label: String,
+    show_draft_picker: bool,
 }
 
 impl LauncherApp {
@@ -227,6 +230,7 @@ impl LauncherApp {
             dragging_model: None,
             show_log_window: false,
             active_preset_label: "默认".to_string(),
+            show_draft_picker: false,
         }
     }
 
@@ -329,6 +333,18 @@ impl LauncherApp {
             self.status = "模型已在手动列表中".to_string();
             return;
         }
+        self.config.draft_models.retain(|draft_id| draft_id != &id);
+        let rel_path = if path.is_absolute() {
+            path.to_string_lossy().replace('\\', "/")
+        } else {
+            path.strip_prefix(&self.config.models_dir)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/")
+        };
+        self.config
+            .model_draft_overrides
+            .retain(|_, draft_id| draft_id != &id && draft_id != &rel_path);
         let display_name = path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -353,7 +369,16 @@ impl LauncherApp {
         let Some(model) = self.selected_model() else {
             return Vec::new();
         };
-        build_args(model, &self.preset, &self.config.models_dir, self.use_mm)
+        build_args(
+            model,
+            &self.preset,
+            &self.config.models_dir,
+            self.use_mm,
+            self.config
+                .model_draft_overrides
+                .get(&model.id)
+                .map(String::as_str),
+        )
     }
 
     fn preview(&self) -> String {
@@ -392,6 +417,37 @@ impl LauncherApp {
                 .models_dir
                 .join(model.rel_path.replace('/', "\\"))
         }
+    }
+
+    fn current_draft_model(&self) -> Option<String> {
+        let model = self.selected_model()?;
+        self.config
+            .model_draft_overrides
+            .get(&model.id)
+            .cloned()
+            .or_else(|| model.draft_model.clone())
+    }
+
+    fn draft_display_name(&self, rel_path: &str) -> String {
+        discover_draft_models(&self.config)
+            .into_iter()
+            .find(|draft| draft.rel_path == rel_path)
+            .map(|draft| draft.display_name)
+            .unwrap_or_else(|| rel_path.to_string())
+    }
+
+    fn set_model_as_draft(&mut self, model: &ModelInfo) {
+        if !self.config.draft_models.contains(&model.id) {
+            self.config.draft_models.push(model.id.clone());
+        }
+        self.config
+            .model_draft_overrides
+            .retain(|main_id, draft_id| {
+                main_id != &model.id && draft_id != &model.id && draft_id != &model.rel_path
+            });
+        self.save_app_config();
+        self.refresh_models();
+        self.status = format!("已设置为 draft 草稿模型: {}", model.display_name);
     }
 
     fn open_model_in_explorer(&mut self, model: &ModelInfo) {
@@ -710,6 +766,91 @@ impl LauncherApp {
         }
     }
 
+    fn show_draft_picker(&mut self, ctx: &egui::Context) {
+        if !self.show_draft_picker {
+            return;
+        }
+        let Some(model) = self.selected_model().cloned() else {
+            self.show_draft_picker = false;
+            return;
+        };
+        let draft_models = discover_draft_models(&self.config);
+        let mut open = true;
+        let mut close_clicked = false;
+        let mut selected: Option<DraftModelInfo> = None;
+        let mut clear = false;
+        egui::Window::new("添加/修改 draft 草稿模型")
+            .collapsible(false)
+            .resizable(true)
+            .default_width(430.0)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new("选择后会为当前主模型添加或替换 --spec-draft-model。")
+                        .color(GRAPHITE)
+                        .size(13.0),
+                );
+                if let Some(current) = self.current_draft_model() {
+                    ui.label(
+                        RichText::new(format!("当前: {}", self.draft_display_name(&current)))
+                            .color(GRAPHITE)
+                            .size(13.0),
+                    );
+                }
+                ui.add_space(8.0);
+                if draft_models.is_empty() {
+                    ui.label(RichText::new("未发现 draft / MTP 草稿模型。").color(CAUTION));
+                } else {
+                    egui::ScrollArea::vertical()
+                        .max_height(260.0)
+                        .show(ui, |ui| {
+                            for draft in &draft_models {
+                                let current = self
+                                    .config
+                                    .model_draft_overrides
+                                    .get(&model.id)
+                                    .is_some_and(|rel| rel == &draft.rel_path)
+                                    || model.draft_model.as_ref() == Some(&draft.rel_path);
+                                let mut label = draft.display_name.clone();
+                                if !draft.size_label.is_empty() {
+                                    label.push_str("  ");
+                                    label.push_str(&draft.size_label);
+                                }
+                                if ui.selectable_label(current, label).clicked() {
+                                    selected = Some(draft.clone());
+                                }
+                                ui.label(RichText::new(&draft.rel_path).color(GRAPHITE).size(12.0));
+                                ui.add_space(4.0);
+                            }
+                        });
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if Self::small_button(ui, "清除当前 draft").clicked() {
+                        clear = true;
+                    }
+                    if Self::small_button(ui, "关闭").clicked() {
+                        close_clicked = true;
+                    }
+                });
+            });
+        if let Some(draft) = selected {
+            self.config
+                .model_draft_overrides
+                .insert(model.id.clone(), draft.rel_path.clone());
+            self.save_app_config();
+            self.status = format!("已设置 draft 草稿模型: {}", draft.display_name);
+            self.show_draft_picker = false;
+        } else if clear {
+            self.config.model_draft_overrides.remove(&model.id);
+            self.save_app_config();
+            self.status = "已清除当前模型的 draft 草稿模型设置".to_string();
+            self.show_draft_picker = false;
+        } else if close_clicked || !open {
+            self.show_draft_picker = false;
+        }
+    }
+
     fn show_server_log_window(&mut self, ctx: &egui::Context) {
         if !self.show_log_window {
             return;
@@ -798,12 +939,21 @@ impl LauncherApp {
                 ),
                 &mut self.help_popup,
             );
-            ui.add_space(8.0);
-            if Self::small_button(ui, "保存默认预设").clicked() {
+        });
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            if Self::small_button(ui, "保存默认").clicked() {
                 self.save_config();
             }
-            if Self::small_button(ui, "保存当前模型预设").clicked() {
+            if Self::small_button(ui, "保存当前模型").clicked() {
                 self.save_model_preset();
+            }
+            if Self::small_button(ui, "draft 草稿模型").clicked() {
+                if self.selected_model().is_some() {
+                    self.show_draft_picker = true;
+                } else {
+                    self.warnings.push("请先选择模型".to_string());
+                }
             }
         });
     }
@@ -1065,7 +1215,7 @@ impl LauncherApp {
                     &mut self.preset.ngl,
                     help(
                         "GPU 层数",
-                        "对应 -ngl，控制卸载到 GPU 的模型层数。数值越高，越依赖显卡。",
+                        "对应 --gpu-layers（兼容短名 -ngl），控制卸载到 GPU 的模型层数。数值越高，越依赖显卡。",
                         "通常会降低 CPU 推理压力。",
                         "CPU 内存中保留的权重可能减少，但仍需装载模型和缓存。",
                         "显存占用显著增加，层数过高可能爆显存。",
@@ -1091,7 +1241,7 @@ impl LauncherApp {
                     &mut self.preset.threads,
                     help(
                         "线程数",
-                        "对应 -t，设置 CPU 推理线程数。通常接近物理核心数或性能核心数更稳。",
+                        "对应 --threads（兼容短名 -t），设置 CPU 推理线程数。通常接近物理核心数或性能核心数更稳。",
                         "直接影响 CPU 占用，过高可能抢占系统资源。",
                         "影响较小。",
                         "无直接影响。",
@@ -1104,7 +1254,7 @@ impl LauncherApp {
                     &mut self.preset.batch_size,
                     help(
                         "批大小",
-                        "对应 -b，影响 prompt 处理和批量 token 处理规模。",
+                        "对应 --batch-size（兼容短名 -b），影响 prompt 处理和批量 token 处理规模。",
                         "较大批次可提高吞吐，但会增加调度压力。",
                         "会增加临时缓冲和 KV 相关内存需求。",
                         "GPU 参与时会明显增加显存峰值。",
@@ -1117,7 +1267,7 @@ impl LauncherApp {
                     &mut self.preset.ubatch_size,
                     help(
                         "微批大小",
-                        "对应 -ub，将大批次拆成更小的微批执行，用于平衡速度和显存峰值。",
+                        "对应 --ubatch-size（兼容短名 -ub），将大批次拆成更小的微批执行，用于平衡速度和显存峰值。",
                         "较小微批可能增加调度次数。",
                         "通常可降低峰值内存压力。",
                         "降低该值通常能降低显存峰值，但可能变慢。",
@@ -1130,7 +1280,7 @@ impl LauncherApp {
                     &mut self.preset.parallel,
                     help(
                         "并发槽位",
-                        "对应 -np，设置服务端可并行处理的请求槽位数量。",
+                        "对应 --parallel（兼容短名 -np），设置服务端可并行处理的请求槽位数量。",
                         "并发越高，CPU 调度和采样压力越高。",
                         "每个槽位会分配上下文和缓存，内存占用可能成倍增加。",
                         "KV 缓存在 GPU 时，显存也会随并发明显增加。",
@@ -1147,7 +1297,7 @@ impl LauncherApp {
                     &mut self.preset.ctx_size,
                     help(
                         "上下文长度",
-                        "对应 -c，设置可保留的最大 token 上下文。长文档和多轮对话需要更高值。",
+                        "对应 --ctx-size（兼容短名 -c），设置可保留的最大 token 上下文。长文档和多轮对话需要更高值。",
                         "长上下文会增加注意力计算量，生成后期更吃 CPU/GPU。",
                         "KV 缓存随上下文长度线性增长。",
                         "KV offload 开启时，显存会随上下文长度线性增长。",
@@ -1591,7 +1741,10 @@ impl eframe::App for LauncherApp {
                                         model.size_label.as_str()
                                     },
                                     if model.mmproj.is_some() { "有" } else { "无" },
-                                    model.draft_model.as_deref().unwrap_or("-")
+                                    self.current_draft_model()
+                                        .as_deref()
+                                        .map(|draft| self.draft_display_name(draft))
+                                        .unwrap_or_else(|| "-".to_string())
                                 ))
                                 .color(self.weak_text_color())
                                 .size(13.0),
@@ -1618,6 +1771,7 @@ impl eframe::App for LauncherApp {
                             let mut rename_model: Option<ModelInfo> = None;
                             let mut open_model: Option<ModelInfo> = None;
                             let mut hide_model: Option<String> = None;
+                            let mut set_draft_model: Option<ModelInfo> = None;
                             let mut move_before: Option<(String, String)> = None;
                             let visible_models: Vec<(usize, ModelInfo)> = self
                                 .models
@@ -1691,6 +1845,11 @@ impl eframe::App for LauncherApp {
                                                     open_model = Some(model.clone());
                                                     ui.close();
                                                 }
+                                                if ui.button("设置为 draft 草稿模型").clicked()
+                                                {
+                                                    set_draft_model = Some(model.clone());
+                                                    ui.close();
+                                                }
                                                 if ui.button("从列表移除").clicked() {
                                                     hide_model = Some(model.id.clone());
                                                     ui.close();
@@ -1724,6 +1883,9 @@ impl eframe::App for LauncherApp {
                             if let Some(model) = open_model {
                                 self.open_model_in_explorer(&model);
                             }
+                            if let Some(model) = set_draft_model {
+                                self.set_model_as_draft(&model);
+                            }
                             if let Some(id) = hide_model {
                                 if !self.config.hidden_models.contains(&id) {
                                     self.config.hidden_models.push(id);
@@ -1745,8 +1907,8 @@ impl eframe::App for LauncherApp {
                 let available_width = ui.available_width();
                 ui.horizontal_top(|ui| {
                     let gap = 10.0;
-                    let left_width = (available_width * 0.36).clamp(332.0, 390.0);
-                    let right_width = left_width;
+                    let left_width = ((available_width - gap) * 0.5).clamp(340.0, 460.0);
+                    let right_width = (available_width - left_width - gap).max(340.0);
                     let column_height = ui.available_height().max(390.0);
 
                     ui.allocate_ui_with_layout(
@@ -1818,6 +1980,7 @@ impl eframe::App for LauncherApp {
 
         self.show_help_popup(ctx);
         self.show_rename_popup(ctx);
+        self.show_draft_picker(ctx);
         self.show_server_log_window(ctx);
     }
 }

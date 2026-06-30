@@ -13,6 +13,14 @@ pub struct ModelInfo {
     pub draft_model: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct DraftModelInfo {
+    pub id: String,
+    pub rel_path: String,
+    pub display_name: String,
+    pub size_label: String,
+}
+
 fn is_main_candidate(path: &Path) -> bool {
     let name = path
         .file_name()
@@ -90,6 +98,20 @@ fn manual_model_info(model: &ManualModel) -> ModelInfo {
     }
 }
 
+fn draft_model_info(path: &Path, models_dir: &Path) -> DraftModelInfo {
+    let metadata = fs::metadata(path).ok();
+    DraftModelInfo {
+        id: model_id(path),
+        rel_path: rel_path(path, models_dir),
+        display_name: path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("draft-model")
+            .to_string(),
+        size_label: metadata.map(|m| size_label(m.len())).unwrap_or_default(),
+    }
+}
+
 fn collect_gguf(root: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(root) else {
         return;
@@ -148,15 +170,60 @@ pub fn discover_models(models_dir: &Path) -> Vec<ModelInfo> {
     result
 }
 
+pub fn discover_draft_models(config: &AppConfig) -> Vec<DraftModelInfo> {
+    let mut files = Vec::new();
+    if config.models_dir.exists() {
+        collect_gguf(&config.models_dir, &mut files);
+    }
+    files.sort();
+
+    let configured: std::collections::BTreeSet<String> = config
+        .draft_models
+        .iter()
+        .map(|s| s.to_lowercase())
+        .collect();
+    let manual: std::collections::BTreeSet<String> = config
+        .manual_models
+        .iter()
+        .map(|model| model_id(&model.path))
+        .collect();
+    let mut result = Vec::new();
+
+    for path in files
+        .iter()
+        .filter(|path| is_draft(path) || configured.contains(&model_id(path)))
+    {
+        let id = model_id(path);
+        if manual.contains(&id) || result.iter().any(|model: &DraftModelInfo| model.id == id) {
+            continue;
+        }
+        let mut model = draft_model_info(path, &config.models_dir);
+        if let Some(alias) = config.model_aliases.get(&model.id) {
+            if !alias.trim().is_empty() {
+                model.display_name = alias.clone();
+            }
+        }
+        result.push(model);
+    }
+
+    result.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+    result
+}
+
 pub fn discover_configured_models(config: &AppConfig) -> Vec<ModelInfo> {
     let hidden: std::collections::BTreeSet<String> = config
         .hidden_models
         .iter()
         .map(|s| s.to_lowercase())
         .collect();
+    let draft: std::collections::BTreeSet<String> = config
+        .draft_models
+        .iter()
+        .map(|s| s.to_lowercase())
+        .collect();
     let mut result: Vec<ModelInfo> = discover_models(&config.models_dir)
         .into_iter()
-        .filter(|model| !hidden.contains(&model.id))
+        .filter(|model| !hidden.contains(&model.id) && !draft.contains(&model.id))
         .map(|mut model| {
             if let Some(alias) = config.model_aliases.get(&model.id) {
                 if !alias.trim().is_empty() {
@@ -191,4 +258,72 @@ pub fn discover_configured_models(config: &AppConfig) -> Vec<ModelInfo> {
         }
     });
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir() -> PathBuf {
+        let name = format!(
+            "local-ai-launcher-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        std::env::temp_dir().join(name)
+    }
+
+    fn write_gguf(path: &Path) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, b"gguf").unwrap();
+    }
+
+    #[test]
+    fn configured_draft_model_is_hidden_from_main_list() {
+        let root = temp_dir();
+        let model = root.join("dflash.gguf");
+        write_gguf(&model);
+        let mut config = AppConfig {
+            models_dir: root.clone(),
+            ..Default::default()
+        };
+        config.draft_models.push(model_id(&model));
+
+        let mains = discover_configured_models(&config);
+        let drafts = discover_draft_models(&config);
+
+        assert!(mains.is_empty());
+        assert_eq!(drafts.len(), 1);
+        assert_eq!(drafts[0].rel_path, "dflash.gguf");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn manual_model_overrides_configured_draft_role() {
+        let root = temp_dir();
+        let model = root.join("dflash.gguf");
+        write_gguf(&model);
+        let mut config = AppConfig {
+            models_dir: root.clone(),
+            ..Default::default()
+        };
+        config.draft_models.push(model_id(&model));
+        config.manual_models.push(ManualModel {
+            path: model.clone(),
+            display_name: "manual dflash".to_string(),
+        });
+
+        let mains = discover_configured_models(&config);
+        let drafts = discover_draft_models(&config);
+
+        assert_eq!(mains.len(), 1);
+        assert_eq!(mains[0].display_name, "manual dflash");
+        assert!(drafts.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
 }

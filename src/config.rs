@@ -130,6 +130,10 @@ pub struct AppConfig {
     pub appearance: AppearanceConfig,
     #[serde(default)]
     pub model_presets: BTreeMap<String, Preset>,
+    #[serde(default)]
+    pub draft_models: Vec<String>,
+    #[serde(default)]
+    pub model_draft_overrides: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,6 +159,8 @@ impl Default for AppConfig {
             model_order: Vec::new(),
             appearance: AppearanceConfig::default(),
             model_presets: BTreeMap::new(),
+            draft_models: Vec::new(),
+            model_draft_overrides: BTreeMap::new(),
         }
     }
 }

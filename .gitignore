@@ -3,3 +3,10 @@ dist/
 *.exe
 local-ai-launcher-config.json
 .superpowers/
+
+# Local-only handoff and audit notes.
+docs/
+HANDOFF_*.md
+*HANDOFF*.md
+REPLICA_AUDIT*.md
+*AUDIT*.md

@@ -29,6 +29,7 @@ pub fn build_args(
     preset: &Preset,
     models_dir: &Path,
     use_mm: bool,
+    draft_override: Option<&str>,
 ) -> Vec<String> {
     let mut args = Vec::new();
     args.push(
@@ -36,7 +37,7 @@ pub fn build_args(
             .to_string_lossy()
             .to_string(),
     );
-    args.push("-m".to_string());
+    args.push("--model".to_string());
     args.push(model_arg(models_dir, &model.rel_path));
 
     if use_mm {
@@ -45,18 +46,18 @@ pub fn build_args(
             args.push(model_arg(models_dir, mmproj));
         }
     }
-    if let Some(draft) = &model.draft_model {
-        args.push("-md".to_string());
+    if let Some(draft) = draft_override.or(model.draft_model.as_deref()) {
+        args.push("--spec-draft-model".to_string());
         args.push(model_arg(models_dir, draft));
     }
 
-    push_pair(&mut args, "-ngl", &preset.ngl);
+    push_pair(&mut args, "--gpu-layers", &preset.ngl);
     push_pair(&mut args, "--n-cpu-moe", &preset.n_cpu_moe);
-    push_pair(&mut args, "-t", &preset.threads);
-    push_pair(&mut args, "-b", &preset.batch_size);
-    push_pair(&mut args, "-ub", &preset.ubatch_size);
-    push_pair(&mut args, "-np", &preset.parallel);
-    push_pair(&mut args, "-c", &preset.ctx_size);
+    push_pair(&mut args, "--threads", &preset.threads);
+    push_pair(&mut args, "--batch-size", &preset.batch_size);
+    push_pair(&mut args, "--ubatch-size", &preset.ubatch_size);
+    push_pair(&mut args, "--parallel", &preset.parallel);
+    push_pair(&mut args, "--ctx-size", &preset.ctx_size);
     push_pair(&mut args, "--timeout", &preset.timeout);
     push_pair(&mut args, "--alias", &preset.alias);
     push_pair(&mut args, "--cache-type-k", &preset.cache_type_k);
@@ -211,7 +212,7 @@ fn quote_arg(value: &str) -> String {
 }
 
 fn quote_arg_for_flag(flag: &str, value: &str) -> String {
-    if matches!(flag, "-m" | "-md" | "--mmproj") {
+    if matches!(flag, "--model" | "--spec-draft-model" | "--mmproj") {
         format!("\"{value}\"")
     } else {
         quote_arg(value)
@@ -244,15 +245,15 @@ mod tests {
         let preview = command_preview(
             &[
                 "llama-server.exe".to_string(),
-                "-m".to_string(),
+                "--model".to_string(),
                 "model.gguf".to_string(),
-                "-c".to_string(),
+                "--ctx-size".to_string(),
                 "1".to_string(),
             ],
             Path::new("C:\\llama"),
         );
-        assert!(preview.contains("  -c 1"));
-        assert!(!preview.contains("\"-c 1\""));
+        assert!(preview.contains("  --ctx-size 1"));
+        assert!(!preview.contains("\"--ctx-size 1\""));
     }
 
     #[test]
@@ -260,17 +261,46 @@ mod tests {
         let preview = command_preview(
             &[
                 "llama-server.exe".to_string(),
-                "-m".to_string(),
+                "--model".to_string(),
                 "model.gguf".to_string(),
-                "-md".to_string(),
+                "--spec-draft-model".to_string(),
                 "draft.gguf".to_string(),
                 "--mmproj".to_string(),
                 "mmproj.gguf".to_string(),
             ],
             Path::new("C:\\llama"),
         );
-        assert!(preview.contains("  -m \"model.gguf\""));
-        assert!(preview.contains("  -md \"draft.gguf\""));
+        assert!(preview.contains("  --model \"model.gguf\""));
+        assert!(preview.contains("  --spec-draft-model \"draft.gguf\""));
         assert!(preview.contains("  --mmproj \"mmproj.gguf\""));
+    }
+
+    #[test]
+    fn build_args_uses_long_flags_and_draft_override() {
+        let model = ModelInfo {
+            id: "main".to_string(),
+            rel_path: "main.gguf".to_string(),
+            display_name: "main".to_string(),
+            size_label: String::new(),
+            mmproj: None,
+            draft_model: Some("auto-draft.gguf".to_string()),
+        };
+        let args = build_args(
+            &model,
+            &Preset::default(),
+            Path::new("C:\\models"),
+            false,
+            Some("manual-draft.gguf"),
+        );
+
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--model", "C:\\models\\main.gguf"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--spec-draft-model", "C:\\models\\manual-draft.gguf"]));
+        assert!(args.contains(&"--gpu-layers".to_string()));
+        assert!(!args.contains(&"-md".to_string()));
+        assert!(!args.contains(&"-m".to_string()));
     }
 }

@@ -6,9 +6,16 @@ mod config;
 mod discovery;
 mod server;
 
+fn window_icon() -> egui::IconData {
+    eframe::icon_data::from_png_bytes(include_bytes!("../assets/local-ai-launcher.png"))
+        .expect("embedded window icon should be a valid PNG")
+}
+
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1400.0, 900.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1400.0, 900.0])
+            .with_icon(window_icon()),
         ..Default::default()
     };
 
