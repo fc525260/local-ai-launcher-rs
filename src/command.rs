@@ -20,6 +20,25 @@ fn model_arg(models_dir: &Path, rel: &str) -> String {
         .to_string()
 }
 
+fn is_mtp_draft(rel: &str) -> bool {
+    Path::new(rel)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|name| {
+            let name = name.to_lowercase();
+            name.starts_with("mtp-") || name.starts_with("mtp_")
+        })
+        .unwrap_or(false)
+}
+
+fn pair_value<'a>(value: &'a str, mtp_default: Option<&'a str>) -> Option<&'a str> {
+    if value.trim().is_empty() {
+        mtp_default
+    } else {
+        Some(value.trim())
+    }
+}
+
 pub fn llama_server_path(llama_cpp_dir: &Path) -> PathBuf {
     llama_cpp_dir.join("llama-server.exe")
 }
@@ -46,10 +65,12 @@ pub fn build_args(
             args.push(model_arg(models_dir, mmproj));
         }
     }
-    if let Some(draft) = draft_override.or(model.draft_model.as_deref()) {
+    let draft_model = draft_override.or(model.draft_model.as_deref());
+    if let Some(draft) = draft_model {
         args.push("--spec-draft-model".to_string());
         args.push(model_arg(models_dir, draft));
     }
+    let mtp_defaults = draft_model.is_some_and(is_mtp_draft);
 
     push_pair(&mut args, "--gpu-layers", &preset.ngl);
     push_pair(&mut args, "--n-cpu-moe", &preset.n_cpu_moe);
@@ -62,10 +83,16 @@ pub fn build_args(
     push_pair(&mut args, "--alias", &preset.alias);
     push_pair(&mut args, "--cache-type-k", &preset.cache_type_k);
     push_pair(&mut args, "--cache-type-v", &preset.cache_type_v);
-    push_pair(&mut args, "--spec-type", &preset.spec_type);
-    push_pair(&mut args, "--spec-draft-n-max", &preset.spec_draft_n_max);
+    if let Some(value) = pair_value(&preset.spec_type, mtp_defaults.then_some("draft-mtp")) {
+        push_pair(&mut args, "--spec-type", value);
+    }
+    if let Some(value) = pair_value(&preset.spec_draft_n_max, mtp_defaults.then_some("3")) {
+        push_pair(&mut args, "--spec-draft-n-max", value);
+    }
     push_pair(&mut args, "--spec-draft-n-min", &preset.spec_draft_n_min);
-    push_pair(&mut args, "--spec-draft-p-min", &preset.spec_draft_p_min);
+    if let Some(value) = pair_value(&preset.spec_draft_p_min, mtp_defaults.then_some("0.7")) {
+        push_pair(&mut args, "--spec-draft-p-min", value);
+    }
     push_pair(
         &mut args,
         "--spec-draft-p-split",
@@ -119,6 +146,9 @@ pub fn build_args(
     }
     if preset.cpu_moe {
         args.push("--cpu-moe".to_string());
+    }
+    if preset.jinja {
+        args.push("--jinja".to_string());
     }
     for part in preset
         .extra_args
@@ -302,5 +332,62 @@ mod tests {
         assert!(args.contains(&"--gpu-layers".to_string()));
         assert!(!args.contains(&"-md".to_string()));
         assert!(!args.contains(&"-m".to_string()));
+    }
+
+    #[test]
+    fn mtp_draft_adds_default_speculative_args_when_empty() {
+        let model = ModelInfo {
+            id: "main".to_string(),
+            rel_path: "main.gguf".to_string(),
+            display_name: "main".to_string(),
+            size_label: String::new(),
+            mmproj: None,
+            draft_model: Some("mtp-draft.gguf".to_string()),
+        };
+        let args = build_args(
+            &model,
+            &Preset::default(),
+            Path::new("C:\\models"),
+            false,
+            None,
+        );
+
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--spec-type", "draft-mtp"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--spec-draft-n-max", "3"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--spec-draft-p-min", "0.7"]));
+        assert!(args.contains(&"--jinja".to_string()));
+    }
+
+    #[test]
+    fn user_speculative_values_override_mtp_defaults() {
+        let model = ModelInfo {
+            id: "main".to_string(),
+            rel_path: "main.gguf".to_string(),
+            display_name: "main".to_string(),
+            size_label: String::new(),
+            mmproj: None,
+            draft_model: Some("mtp-draft.gguf".to_string()),
+        };
+        let preset = Preset {
+            spec_type: "draft".to_string(),
+            spec_draft_n_max: "5".to_string(),
+            spec_draft_p_min: "0.5".to_string(),
+            ..Default::default()
+        };
+        let args = build_args(&model, &preset, Path::new("C:\\models"), false, None);
+
+        assert!(args.windows(2).any(|pair| pair == ["--spec-type", "draft"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--spec-draft-n-max", "5"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--spec-draft-p-min", "0.5"]));
     }
 }

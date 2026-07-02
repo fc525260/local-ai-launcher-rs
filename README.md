@@ -10,6 +10,7 @@ Rust/egui 编写的 llama.cpp 本地模型 GUI 启动器。
 - 自动扫描 GGUF 主模型，并识别多模态 `mmproj` 和 draft/MTP 模型。
 - 支持将任意 GGUF 标记为 `--spec-draft-model` 草稿模型，标记后不再作为主模型显示；手动添加回来时可恢复为主模型。
 - 支持为当前主模型添加/修改跨文件夹 draft 草稿模型，用于 MTP、dflash 等推测解码草稿模型。
+- 自动识别到 MTP draft 模型时，会在用户未手动填写推测参数时默认添加 `--spec-type draft-mtp --spec-draft-n-max 3 --spec-draft-p-min 0.7`。
 - 支持默认参数预设和模型专属参数预设。
 - 支持右键重命名模型显示名、打开模型所在位置、隐藏模型。
 - 支持拖动调整模型显示顺序。
@@ -17,6 +18,7 @@ Rust/egui 编写的 llama.cpp 本地模型 GUI 启动器。
 - 支持导出当前启动命令为 `.bat` 脚本。
 - 支持额外参数逐行填写，预览/脚本会按命令行参数拆分并正确引用模型路径。
 - 启动命令预览和导出脚本优先使用完整参数名，例如 `--model`、`--spec-draft-model`、`--ctx-size`。
+- 默认启用 `--jinja`，也可在参数开关中关闭。
 - 支持基础外观设置。
 - 支持 Windows exe 文件图标和运行窗口图标。
 
@@ -48,8 +50,8 @@ cargo build --release
 推送 `v*` 标签会触发 GitHub Actions 自动构建 Windows 单文件 exe，并发布到 GitHub Release：
 
 ```powershell
-git tag v0.1.2
-git push origin v0.1.2
+git tag v0.1.3
+git push origin v0.1.3
 ```
 
 也可以在 GitHub Actions 页面手动运行 `Release` 工作流生成构建产物。

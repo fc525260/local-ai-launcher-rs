@@ -41,7 +41,13 @@ pub struct Preset {
     pub kv_unified: bool,
     pub swa_full: bool,
     pub cpu_moe: bool,
+    #[serde(default = "default_true")]
+    pub jinja: bool,
     pub extra_args: String,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Preset {
@@ -81,6 +87,7 @@ impl Default for Preset {
             kv_unified: false,
             swa_full: false,
             cpu_moe: false,
+            jinja: true,
             extra_args: String::new(),
         }
     }

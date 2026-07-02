@@ -1607,6 +1607,19 @@ impl LauncherApp {
                 ),
                 &mut self.help_popup,
             );
+            Self::param_checkbox(
+                ui,
+                &mut self.preset.jinja,
+                "启用 Jinja 模板",
+                help(
+                    "启用 Jinja 模板",
+                    "传入 --jinja，启用 llama.cpp 的 Jinja chat template 解析。关闭时不传该参数。",
+                    "模板渲染只在请求准备阶段有很小开销。",
+                    "几乎无影响。",
+                    "无影响。",
+                ),
+                &mut self.help_popup,
+            );
         });
         egui::CollapsingHeader::new("额外参数").show(ui, |ui| {
             ui.horizontal(|ui| {
