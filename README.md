@@ -54,11 +54,11 @@ Copy-Item target\release\local_ai_launcher.exe dist\本地AI启动器.exe -Force
 
 ## 发布
 
-推送 `v*` 标签会触发 GitHub Actions 自动构建 Windows 单文件 exe，并发布到 GitHub Release：
+推送 `v*` 标签会触发 GitHub Actions 自动构建 Windows 单文件 exe，并发布到 GitHub Release。Release 下载资产名为 `local-ai-launcher.exe`：
 
 ```powershell
-git tag v0.1.3
-git push origin v0.1.3
+git tag v0.1.5
+git push origin v0.1.5
 ```
 
 也可以在 GitHub Actions 页面手动运行 `Release` 工作流生成构建产物。

@@ -31,16 +31,16 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item target\release\local_ai_launcher.exe dist\本地AI启动器.exe
+          Copy-Item target\release\local_ai_launcher.exe dist\local-ai-launcher.exe
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: 本地AI启动器
-          path: dist/本地AI启动器.exe
+          name: local-ai-launcher-windows
+          path: dist/local-ai-launcher.exe
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/本地AI启动器.exe
+          files: dist/local-ai-launcher.exe
