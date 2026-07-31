@@ -4,6 +4,7 @@ mod app;
 mod command;
 mod config;
 mod discovery;
+mod parameters;
 mod server;
 
 fn window_icon() -> egui::IconData {

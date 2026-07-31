@@ -1,8 +1,14 @@
-use crate::command::{bat_script, build_args, command_preview, llama_server_path};
-use crate::config::{load_config, save_config, AppConfig, ManualModel, Preset};
+use crate::command::{
+    bat_script, build_args, command_preview, llama_server_path, parse_extra_args,
+};
+use crate::config::{
+    load_config, save_config, AppConfig, ExtraParam, ManualModel, ParamSection, ParameterLayout,
+    Preset, ToggleState,
+};
 use crate::discovery::{
     discover_configured_models, discover_draft_models, DraftModelInfo, ModelInfo,
 };
+use crate::parameters::{parameter, parameter_by_key, ControlKind, ParamId};
 use crate::server::{self, ServerEvent, ServerProcess};
 use eframe::egui::{
     self, Color32, CornerRadius, CursorIcon, FontId, PointerButton, RichText, Stroke, Vec2,
@@ -51,9 +57,9 @@ fn configure_theme(ctx: &egui::Context) {
     visuals.code_bg_color = FOG;
     visuals.panel_fill = FOG;
     visuals.window_fill = SNOW;
-    visuals.window_stroke = Stroke::new(1.0, SILVER_MIST);
-    visuals.window_corner_radius = CornerRadius::same(28);
-    visuals.menu_corner_radius = CornerRadius::same(18);
+    visuals.window_stroke = Stroke::new(1.0_f32, SILVER_MIST);
+    visuals.window_corner_radius = CornerRadius::same(8);
+    visuals.menu_corner_radius = CornerRadius::same(6);
     visuals.warn_fg_color = CAUTION;
     visuals.button_frame = true;
     visuals.collapsing_header_frame = false;
@@ -67,9 +73,9 @@ fn configure_theme(ctx: &egui::Context) {
         &mut visuals.widgets.active,
         &mut visuals.widgets.open,
     ] {
-        widget.corner_radius = CornerRadius::same(12);
-        widget.bg_stroke = Stroke::new(1.0, SILVER_MIST);
-        widget.fg_stroke = Stroke::new(1.0, INK);
+        widget.corner_radius = CornerRadius::same(4);
+        widget.bg_stroke = Stroke::new(1.0_f32, SILVER_MIST);
+        widget.fg_stroke = Stroke::new(1.0_f32, INK);
     }
     visuals.widgets.noninteractive.bg_fill = SNOW;
     visuals.widgets.inactive.bg_fill = SNOW;
@@ -193,6 +199,14 @@ pub struct LauncherApp {
     show_log_window: bool,
     active_preset_label: String,
     show_draft_picker: bool,
+    customize_param_layout: bool,
+    dragging_param: Option<ParamRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ParamRow {
+    Builtin(String),
+    Extra(u64),
 }
 
 impl LauncherApp {
@@ -231,6 +245,8 @@ impl LauncherApp {
             show_log_window: false,
             active_preset_label: "默认".to_string(),
             show_draft_picker: false,
+            customize_param_layout: false,
+            dragging_param: None,
         }
     }
 
@@ -633,7 +649,7 @@ impl LauncherApp {
             egui::Button::new(RichText::new("?").color(INK).size(13.0).strong())
                 .fill(SILVER_MIST)
                 .stroke(Stroke::NONE)
-                .corner_radius(CornerRadius::same(11))
+                .corner_radius(CornerRadius::same(4))
                 .min_size(egui::vec2(22.0, 22.0)),
         );
         let clicked = response.clicked();
@@ -657,52 +673,6 @@ impl LauncherApp {
             );
             Self::help_button(ui, help, popup);
             ui.add_sized([148.0, 24.0], egui::TextEdit::singleline(value));
-        });
-    }
-
-    fn cache_combo(
-        ui: &mut egui::Ui,
-        label: &str,
-        value: &mut String,
-        help: ParamHelp,
-        popup: &mut Option<ParamHelp>,
-    ) {
-        const TYPES: &[&str] = &[
-            "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1",
-        ];
-        let selected = if value.trim().is_empty() {
-            "默认".to_string()
-        } else {
-            value.clone()
-        };
-        ui.horizontal(|ui| {
-            ui.add_sized(
-                [82.0, 22.0],
-                egui::Label::new(RichText::new(label).color(GRAPHITE).size(13.0)),
-            );
-            Self::help_button(ui, help, popup);
-            egui::ComboBox::from_id_salt(label)
-                .width(148.0)
-                .selected_text(selected)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(value, String::new(), "默认");
-                    for ty in TYPES {
-                        ui.selectable_value(value, (*ty).to_string(), *ty);
-                    }
-                });
-        });
-    }
-
-    fn param_checkbox(
-        ui: &mut egui::Ui,
-        value: &mut bool,
-        label: &str,
-        help: ParamHelp,
-        popup: &mut Option<ParamHelp>,
-    ) {
-        ui.horizontal(|ui| {
-            ui.add_sized([226.0, 24.0], egui::Checkbox::new(value, label));
-            Self::help_button(ui, help, popup);
         });
     }
 
@@ -970,7 +940,7 @@ impl LauncherApp {
                     egui::Button::new(RichText::new("启动").color(SNOW).size(18.0).strong())
                         .fill(AZURE)
                         .stroke(Stroke::NONE)
-                        .corner_radius(CornerRadius::same(28))
+                        .corner_radius(CornerRadius::same(4))
                         .min_size(button_size),
                 )
                 .clicked()
@@ -983,7 +953,7 @@ impl LauncherApp {
                     egui::Button::new(RichText::new("停止").color(INK).size(18.0).strong())
                         .fill(SILVER_MIST)
                         .stroke(Stroke::NONE)
-                        .corner_radius(CornerRadius::same(28))
+                        .corner_radius(CornerRadius::same(4))
                         .min_size(button_size),
                 )
                 .clicked()
@@ -998,7 +968,7 @@ impl LauncherApp {
             egui::Button::new(RichText::new(text).color(INK).size(13.0))
                 .fill(SILVER_MIST)
                 .stroke(Stroke::NONE)
-                .corner_radius(CornerRadius::same(18))
+                .corner_radius(CornerRadius::same(4))
                 .min_size(egui::vec2(54.0, 24.0)),
         )
     }
@@ -1025,8 +995,8 @@ impl LauncherApp {
     fn card_frame_with_border(border: Color32) -> egui::Frame {
         egui::Frame::new()
             .fill(SNOW)
-            .stroke(Stroke::new(1.0, border))
-            .corner_radius(CornerRadius::same(28))
+            .stroke(Stroke::new(1.0_f32, border))
+            .corner_radius(CornerRadius::same(8))
             .inner_margin(egui::Margin::same(16))
     }
 
@@ -1050,7 +1020,7 @@ impl LauncherApp {
         egui::Frame::new()
             .fill(FOG)
             .stroke(Stroke::NONE)
-            .corner_radius(CornerRadius::same(18))
+            .corner_radius(CornerRadius::same(6))
             .inner_margin(egui::Margin::same(12))
     }
 
@@ -1125,7 +1095,7 @@ impl LauncherApp {
         let painter = ui.painter();
         painter.rect_filled(rect, 9.0, Color32::from_rgb(221, 220, 140));
         let center = rect.center();
-        let stroke = Stroke::new(1.4, INK);
+        let stroke = Stroke::new(1.4_f32, INK);
         let left = rect.left() + 5.0;
         let right = rect.right() - 5.0;
         let top = center.y - 3.4;
@@ -1149,498 +1119,544 @@ impl LauncherApp {
         painter.circle_filled(center, 2.4, INK);
     }
 
-    fn params_ui(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("基础")
-            .default_open(true)
-            .show(ui, |ui| {
-                Self::param_text(
-                    ui,
-                    "监听地址",
-                    &mut self.preset.host,
-                    help(
-                        "监听地址",
-                        "设置 llama-server 绑定的网络地址。127.0.0.1 仅本机访问，0.0.0.0 允许局域网访问。",
-                        "几乎无影响。",
-                        "几乎无影响。",
-                        "无影响。",
-                    ),
-                    &mut self.help_popup,
-                );
-                Self::param_text(
-                    ui,
-                    "端口",
-                    &mut self.preset.port,
-                    help(
-                        "端口",
-                        "设置 HTTP 服务端口，客户端通过这个端口连接本地模型服务。",
-                        "几乎无影响。",
-                        "几乎无影响。",
-                        "无影响。",
-                    ),
-                    &mut self.help_popup,
-                );
-                Self::param_text(
-                    ui,
-                    "超时秒数",
-                    &mut self.preset.timeout,
-                    help(
-                        "超时秒数",
-                        "设置请求超时时间。长请求、长上下文或慢速模型可以适当增大。",
-                        "不会直接增加 CPU 占用，只会允许请求运行更久。",
-                        "长时间保留请求状态时会略增内存占用。",
-                        "生成持续时间更长时，显存占用会保持更久。",
-                    ),
-                    &mut self.help_popup,
-                );
-                Self::param_text(
-                    ui,
-                    "模型别名",
-                    &mut self.preset.alias,
-                    help(
-                        "模型别名",
-                        "设置 API 返回和调用时使用的模型名称，便于兼容 OpenAI 风格客户端。",
-                        "无影响。",
-                        "无影响。",
-                        "无影响。",
-                    ),
-                    &mut self.help_popup,
-                );
-            });
-        egui::CollapsingHeader::new("性能")
-            .default_open(true)
-            .show(ui, |ui| {
-                Self::param_text(
-                    ui,
-                    "GPU 层数",
-                    &mut self.preset.ngl,
-                    help(
-                        "GPU 层数",
-                        "对应 --gpu-layers（兼容短名 -ngl），控制卸载到 GPU 的模型层数。数值越高，越依赖显卡。",
-                        "通常会降低 CPU 推理压力。",
-                        "CPU 内存中保留的权重可能减少，但仍需装载模型和缓存。",
-                        "显存占用显著增加，层数过高可能爆显存。",
-                    ),
-                    &mut self.help_popup,
-                );
-                Self::param_text(
-                    ui,
-                    "CPU MoE 层数",
-                    &mut self.preset.n_cpu_moe,
-                    help(
-                        "CPU MoE 层数",
-                        "对应 --n-cpu-moe，控制 MoE 专家层放在 CPU 的数量，用于在显存不足时分担。",
-                        "会增加 CPU 计算和内存带宽压力。",
-                        "会增加系统内存占用。",
-                        "可降低显存压力，但可能降低速度。",
-                    ),
-                    &mut self.help_popup,
-                );
-                Self::param_text(
-                    ui,
-                    "线程数",
-                    &mut self.preset.threads,
-                    help(
-                        "线程数",
-                        "对应 --threads（兼容短名 -t），设置 CPU 推理线程数。通常接近物理核心数或性能核心数更稳。",
-                        "直接影响 CPU 占用，过高可能抢占系统资源。",
-                        "影响较小。",
-                        "无直接影响。",
-                    ),
-                    &mut self.help_popup,
-                );
-                Self::param_text(
-                    ui,
-                    "批大小",
-                    &mut self.preset.batch_size,
-                    help(
-                        "批大小",
-                        "对应 --batch-size（兼容短名 -b），影响 prompt 处理和批量 token 处理规模。",
-                        "较大批次可提高吞吐，但会增加调度压力。",
-                        "会增加临时缓冲和 KV 相关内存需求。",
-                        "GPU 参与时会明显增加显存峰值。",
-                    ),
-                    &mut self.help_popup,
-                );
-                Self::param_text(
-                    ui,
-                    "微批大小",
-                    &mut self.preset.ubatch_size,
-                    help(
-                        "微批大小",
-                        "对应 --ubatch-size（兼容短名 -ub），将大批次拆成更小的微批执行，用于平衡速度和显存峰值。",
-                        "较小微批可能增加调度次数。",
-                        "通常可降低峰值内存压力。",
-                        "降低该值通常能降低显存峰值，但可能变慢。",
-                    ),
-                    &mut self.help_popup,
-                );
-                Self::param_text(
-                    ui,
-                    "并发槽位",
-                    &mut self.preset.parallel,
-                    help(
-                        "并发槽位",
-                        "对应 --parallel（兼容短名 -np），设置服务端可并行处理的请求槽位数量。",
-                        "并发越高，CPU 调度和采样压力越高。",
-                        "每个槽位会分配上下文和缓存，内存占用可能成倍增加。",
-                        "KV 缓存在 GPU 时，显存也会随并发明显增加。",
-                    ),
-                    &mut self.help_popup,
-                );
-            });
-        egui::CollapsingHeader::new("上下文/KV")
-            .default_open(true)
-            .show(ui, |ui| {
-                Self::param_text(
-                    ui,
-                    "上下文长度",
-                    &mut self.preset.ctx_size,
-                    help(
-                        "上下文长度",
-                        "对应 --ctx-size（兼容短名 -c），设置可保留的最大 token 上下文。长文档和多轮对话需要更高值。",
-                        "长上下文会增加注意力计算量，生成后期更吃 CPU/GPU。",
-                        "KV 缓存随上下文长度线性增长。",
-                        "KV offload 开启时，显存会随上下文长度线性增长。",
-                    ),
-                    &mut self.help_popup,
-                );
-                Self::cache_combo(
-                    ui,
-                    "K 缓存类型",
-                    &mut self.preset.cache_type_k,
-                    help(
-                        "K 缓存类型",
-                        "对应 --cache-type-k，设置 Key KV 缓存精度。默认表示不传该参数。",
-                        "低精度可能略增解码转换开销，但通常影响较小。",
-                        "低精度可降低 KV 缓存内存占用。",
-                        "KV 在 GPU 时，低精度可显著降低显存占用。",
-                    ),
-                    &mut self.help_popup,
-                );
-                Self::cache_combo(
-                    ui,
-                    "V 缓存类型",
-                    &mut self.preset.cache_type_v,
-                    help(
-                        "V 缓存类型",
-                        "对应 --cache-type-v，设置 Value KV 缓存精度。默认表示不传该参数。",
-                        "低精度可能影响速度或质量，具体取决于模型和硬件。",
-                        "低精度可降低 KV 缓存内存占用。",
-                        "KV 在 GPU 时，低精度可显著降低显存占用。",
-                    ),
-                    &mut self.help_popup,
-                );
-            });
-        egui::CollapsingHeader::new("GPU / 推测 / 多模态").show(ui, |ui| {
-            Self::param_text(
-                ui,
-                "切分模式",
-                &mut self.preset.split_mode,
-                help(
-                    "切分模式",
-                    "对应 --split-mode，控制多 GPU 场景下模型张量或层如何切分。",
-                    "多 GPU 通信不当时可能增加 CPU 调度等待。",
-                    "影响较小，主要取决于模型装载策略。",
-                    "决定显存如何分摊到多张 GPU，设置不当会导致某张卡爆显存。",
-                ),
-                &mut self.help_popup,
-            );
-            Self::param_text(
-                ui,
-                "张量切分",
-                &mut self.preset.tensor_split,
-                help(
-                    "张量切分",
-                    "对应 --tensor-split，手动指定多 GPU 显存或计算分配比例。",
-                    "通常无直接 CPU 收益，配置复杂时可能增加调度开销。",
-                    "影响较小。",
-                    "用于控制每张 GPU 承担的显存比例，适合不同显存容量的多卡。",
-                ),
-                &mut self.help_popup,
-            );
-            Self::param_text(
-                ui,
-                "主 GPU",
-                &mut self.preset.main_gpu,
-                help(
-                    "主 GPU",
-                    "对应 --main-gpu，指定主 GPU 编号，常用于多 GPU 或切分模式。",
-                    "几乎无影响。",
-                    "几乎无影响。",
-                    "会影响主卡承担的缓存和计算压力。",
-                ),
-                &mut self.help_popup,
-            );
-            Self::param_text(
-                ui,
-                "设备",
-                &mut self.preset.device,
-                help(
-                    "设备",
-                    "对应 --device，指定 llama.cpp 使用的设备。留空时使用后端默认选择。",
-                    "选 CPU 设备会显著增加 CPU 负载。",
-                    "CPU 路径通常更多依赖系统内存。",
-                    "选择 GPU 设备会增加对应显卡显存占用。",
-                ),
-                &mut self.help_popup,
-            );
-            Self::param_text(
-                ui,
-                "推测类型",
-                &mut self.preset.spec_type,
-                help(
-                    "推测类型",
-                    "对应 --spec-type，设置 speculative decoding 的策略，需要草稿模型配合。",
-                    "会增加草稿模型的额外计算，但可能减少主模型等待。",
-                    "需要额外装载草稿模型和缓存。",
-                    "草稿模型放 GPU 时会额外占用显存。",
-                ),
-                &mut self.help_popup,
-            );
-            Self::param_text(
-                ui,
-                "草稿最大 N",
-                &mut self.preset.spec_draft_n_max,
-                help(
-                    "草稿最大 N",
-                    "对应 --spec-draft-n-max，限制每轮最多生成多少草稿 token。",
-                    "数值越大，草稿模型计算越多。",
-                    "草稿缓存和临时缓冲会增加。",
-                    "草稿模型在 GPU 时会增加显存峰值。",
-                ),
-                &mut self.help_popup,
-            );
-            Self::param_text(
-                ui,
-                "草稿最小 N",
-                &mut self.preset.spec_draft_n_min,
-                help(
-                    "草稿最小 N",
-                    "对应 --spec-draft-n-min，设置每轮至少尝试的草稿 token 数。",
-                    "提高后会增加草稿模型固定计算量。",
-                    "影响较小。",
-                    "草稿模型在 GPU 时略增显存压力。",
-                ),
-                &mut self.help_popup,
-            );
-            Self::param_text(
-                ui,
-                "草稿最小概率",
-                &mut self.preset.spec_draft_p_min,
-                help(
-                    "草稿最小概率",
-                    "对应 --spec-draft-p-min，低于该概率的草稿 token 会被过滤。",
-                    "影响草稿接受率，间接影响主模型和草稿模型工作量。",
-                    "几乎无直接影响。",
-                    "几乎无直接影响。",
-                ),
-                &mut self.help_popup,
-            );
-            Self::param_text(
-                ui,
-                "草稿切分概率",
-                &mut self.preset.spec_draft_p_split,
-                help(
-                    "草稿切分概率",
-                    "对应 --spec-draft-p-split，控制草稿 token 分支或切分阈值。",
-                    "会影响推测解码的尝试次数和接受效率。",
-                    "几乎无直接影响。",
-                    "几乎无直接影响。",
-                ),
-                &mut self.help_popup,
-            );
-            Self::param_text(
-                ui,
-                "图像最小 token",
-                &mut self.preset.image_min_tokens,
-                help(
-                    "图像最小 token",
-                    "对应 --image-min-tokens，多模态时限制图像至少占用的 token 数。",
-                    "图像 token 更多会增加后续注意力计算。",
-                    "会增加上下文和 KV 缓存占用。",
-                    "KV 在 GPU 时会增加显存占用。",
-                ),
-                &mut self.help_popup,
-            );
-            Self::param_text(
-                ui,
-                "图像最大 token",
-                &mut self.preset.image_max_tokens,
-                help(
-                    "图像最大 token",
-                    "对应 --image-max-tokens，多模态时限制图像最多占用的 token 数。",
-                    "上限越高，复杂图片处理和后续推理成本越高。",
-                    "上限越高，最坏情况下上下文和 KV 缓存占用越高。",
-                    "KV 在 GPU 时，较高上限会增加显存峰值。",
-                ),
-                &mut self.help_popup,
-            );
-        });
-        egui::CollapsingHeader::new("开关").show(ui, |ui| {
-            Self::param_checkbox(
-                ui,
-                &mut self.preset.web_ui,
-                "启用 llama.cpp Web UI",
-                help(
-                    "启用 llama.cpp Web UI",
-                    "传入 --ui 或 --no-ui，控制 llama-server 是否提供内置网页界面。",
-                    "Web UI 本身占用很低。",
-                    "会增加少量服务端资源。",
-                    "无影响。",
-                ),
-                &mut self.help_popup,
-            );
-            Self::param_checkbox(
-                ui,
-                &mut self.preset.log_timestamps,
-                "日志时间戳",
-                help(
-                    "日志时间戳",
-                    "传入 --log-timestamps 或 --no-log-timestamps，控制日志是否带时间。",
-                    "几乎无影响。",
-                    "日志文本会略微变长。",
-                    "无影响。",
-                ),
-                &mut self.help_popup,
-            );
-            Self::param_checkbox(
-                ui,
-                &mut self.preset.offline,
-                "离线模式",
-                help(
-                    "离线模式",
-                    "传入 --offline，禁止服务端尝试在线行为，适合纯本地使用。",
-                    "几乎无影响。",
-                    "几乎无影响。",
-                    "无影响。",
-                ),
-                &mut self.help_popup,
-            );
-            Self::param_checkbox(
-                ui,
-                &mut self.preset.verbose,
-                "详细日志",
-                help(
-                    "详细日志",
-                    "传入 --verbose，输出更详细的运行信息，便于排查参数和性能问题。",
-                    "日志量变大时会有很小的 CPU 开销。",
-                    "GUI 日志缓存会占用更多内存。",
-                    "无影响。",
-                ),
-                &mut self.help_popup,
-            );
-            Self::param_checkbox(
-                ui,
-                &mut self.preset.kv_offload,
-                "KV 缓存 offload",
-                help(
-                    "KV 缓存 offload",
-                    "传入 --kv-offload 或 --no-kv-offload，控制 KV 缓存是否尽量放到 GPU。",
-                    "开启后可减少 CPU 内存访问压力。",
-                    "关闭时更多 KV 留在系统内存。",
-                    "开启后显存占用会随上下文和并发明显增加。",
-                ),
-                &mut self.help_popup,
-            );
-            Self::param_checkbox(
-                ui,
-                &mut self.preset.mlock,
-                "锁定内存",
-                help(
-                    "锁定内存",
-                    "传入 --mlock，尽量锁定模型内存，减少被系统换出导致的卡顿。",
-                    "可减少换页造成的 CPU 等待。",
-                    "会让模型占用的系统内存更难被系统回收。",
-                    "无直接影响。",
-                ),
-                &mut self.help_popup,
-            );
-            Self::param_checkbox(
-                ui,
-                &mut self.preset.mmap,
-                "内存映射 mmap",
-                help(
-                    "内存映射 mmap",
-                    "传入 --mmap 或 --no-mmap，控制是否用内存映射方式加载模型文件。",
-                    "开启通常加载更快，运行中影响取决于磁盘和缓存命中。",
-                    "开启可减少一次性读入压力，但仍会占用文件缓存。",
-                    "无直接影响。",
-                ),
-                &mut self.help_popup,
-            );
-            Self::param_checkbox(
-                ui,
-                &mut self.preset.kv_unified,
-                "统一 KV buffer",
-                help(
-                    "统一 KV buffer",
-                    "传入 --kv-unified，使用统一 KV buffer 策略。",
-                    "可能改善部分场景的调度一致性。",
-                    "会改变 KV 缓存分配方式，具体占用取决于模型和并发。",
-                    "KV 在 GPU 时会改变显存分配方式。",
-                ),
-                &mut self.help_popup,
-            );
-            Self::param_checkbox(
-                ui,
-                &mut self.preset.swa_full,
-                "SWA 全尺寸缓存",
-                help(
-                    "SWA 全尺寸缓存",
-                    "传入 --swa-full，为滑动窗口注意力使用全尺寸缓存。",
-                    "可能减少特殊缓存路径的调度差异。",
-                    "会增加 KV 缓存内存占用。",
-                    "KV 在 GPU 时会增加显存占用。",
-                ),
-                &mut self.help_popup,
-            );
-            Self::param_checkbox(
-                ui,
-                &mut self.preset.cpu_moe,
-                "全部 MoE 放 CPU",
-                help(
-                    "全部 MoE 放 CPU",
-                    "传入 --cpu-moe，将 MoE 专家计算放到 CPU，常用于显存不足时。",
-                    "会显著增加 CPU 计算和内存带宽压力。",
-                    "会增加系统内存占用。",
-                    "可明显降低 MoE 模型的显存压力。",
-                ),
-                &mut self.help_popup,
-            );
-            Self::param_checkbox(
-                ui,
-                &mut self.preset.jinja,
-                "启用 Jinja 模板",
-                help(
-                    "启用 Jinja 模板",
-                    "传入 --jinja，启用 llama.cpp 的 Jinja chat template 解析。关闭时不传该参数。",
-                    "模板渲染只在请求准备阶段有很小开销。",
-                    "几乎无影响。",
-                    "无影响。",
-                ),
-                &mut self.help_popup,
-            );
-        });
-        egui::CollapsingHeader::new("额外参数").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("每行一个参数");
-                Self::help_button(
-                    ui,
-                    help(
-                        "额外参数",
-                        "逐行追加到启动命令末尾，用于临时测试本界面尚未提供的 llama-server 参数。",
-                        "取决于你追加的参数。",
-                        "取决于你追加的参数。",
-                        "取决于你追加的参数。",
-                    ),
-                    &mut self.help_popup,
-                );
-            });
+    fn parameter_help(id: ParamId) -> ParamHelp {
+        let definition = parameter(id);
+        match id {
+            ParamId::LoadMode => help(
+                definition.label,
+                "对应 --load-mode。可选择 none、mmap、mlock、mmap+mlock 或 dio；默认不传，由 llama.cpp 决定。",
+                "加载阶段的 CPU 行为取决于所选模式。",
+                "mlock 会阻止模型内存被换出，mmap 使用系统文件缓存。",
+                "无直接影响。",
+            ),
+            ParamId::FlashAttn => help(
+                definition.label,
+                "对应 --flash-attn on|off|auto。默认不传；-fa 是官方短名。",
+                "通常可降低注意力计算开销。",
+                "影响较小。",
+                "通常可改善支持设备上的速度和显存效率。",
+            ),
+            ParamId::SpecType => help(
+                definition.label,
+                "对应 --spec-type，选项固定为当前 llama-server 支持的推测解码类型。默认不传；检测到 MTP 草稿模型时自动使用 draft-mtp。",
+                "会增加草稿模型计算。",
+                "需要草稿模型和缓存。",
+                "草稿模型放在 GPU 时会额外占用显存。",
+            ),
+            ParamId::ReasoningPreserve => help(
+                definition.label,
+                "对应 --reasoning-preserve / --no-reasoning-preserve。仅支持 preserve reasoning 的聊天模板会使用此设置。",
+                "无直接影响。",
+                "保留更长历史时会增加上下文占用。",
+                "更长上下文可能增加 KV 显存。",
+            ),
+            ParamId::CpuMoe => help(
+                definition.label,
+                "对应 --cpu-moe，将全部 MoE 专家权重放在 CPU。启用后不再传 --n-cpu-moe。",
+                "显著增加 CPU 和内存带宽压力。",
+                "增加系统内存占用。",
+                "降低 MoE 权重的显存占用。",
+            ),
+            ParamId::NCpuMoe => help(
+                definition.label,
+                "对应 --n-cpu-moe，仅将前 N 个 MoE 层的专家权重放在 CPU。",
+                "层数越多，CPU 压力越高。",
+                "层数越多，系统内存占用越高。",
+                "可降低显存占用。",
+            ),
+            ParamId::ImageMinTokens | ParamId::ImageMaxTokens => help(
+                definition.label,
+                "仅用于支持动态分辨率的视觉模型；默认不传并读取模型设置。",
+                "图像 token 越多，计算越多。",
+                "会占用上下文和 KV 缓存。",
+                "KV offload 时会增加显存占用。",
+            ),
+            ParamId::Jinja => help(
+                definition.label,
+                "对应 --jinja，启用 llama.cpp Jinja chat template 解析。",
+                "模板渲染开销很小。",
+                "几乎无影响。",
+                "无影响。",
+            ),
+            ParamId::WebUi => help(
+                definition.label,
+                "对应 --ui / --no-ui，控制 llama-server 内置网页界面。默认不传。",
+                "影响很小。",
+                "增加少量服务端资源。",
+                "无影响。",
+            ),
+            ParamId::LogTimestamps => help(
+                definition.label,
+                "对应 --log-timestamps / --no-log-timestamps。默认不传。",
+                "几乎无影响。",
+                "日志文本会略微变长。",
+                "无影响。",
+            ),
+            _ => help(
+                definition.label,
+                "将此值作为对应的 llama-server 参数传入；文本或选项留在默认状态时不传。",
+                "具体影响取决于模型、数值和运行后端。",
+                "具体影响取决于模型和配置。",
+                "GPU 参与时请通过命令预览核对配置。",
+            ),
+        }
+    }
+
+    fn param_choice(
+        ui: &mut egui::Ui,
+        definition: &'static crate::parameters::ParameterDefinition,
+        value: &mut String,
+        choices: &[&str],
+        help: ParamHelp,
+        popup: &mut Option<ParamHelp>,
+    ) {
+        let selected = if value.is_empty() {
+            "默认".to_string()
+        } else {
+            value.clone()
+        };
+        ui.horizontal(|ui| {
             ui.add_sized(
-                [360.0, 90.0],
-                egui::TextEdit::multiline(&mut self.preset.extra_args),
+                [128.0, 26.0],
+                egui::Label::new(RichText::new(definition.label).color(GRAPHITE).size(13.0)),
             );
+            Self::help_button(ui, help, popup);
+            egui::ComboBox::from_id_salt(definition.key)
+                .width(150.0)
+                .selected_text(selected)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(value, String::new(), "默认");
+                    for choice in choices {
+                        ui.selectable_value(value, (*choice).to_string(), *choice);
+                    }
+                });
         });
+    }
+
+    fn param_toggle(
+        ui: &mut egui::Ui,
+        definition: &'static crate::parameters::ParameterDefinition,
+        value: &mut ToggleState,
+        two_sided: bool,
+        help: ParamHelp,
+        popup: &mut Option<ParamHelp>,
+    ) {
+        let selected = match value {
+            ToggleState::Default => "默认",
+            ToggleState::Enabled => "启用",
+            ToggleState::Disabled => "禁用",
+        };
+        ui.horizontal(|ui| {
+            ui.add_sized(
+                [128.0, 26.0],
+                egui::Label::new(RichText::new(definition.label).color(GRAPHITE).size(13.0)),
+            );
+            Self::help_button(ui, help, popup);
+            egui::ComboBox::from_id_salt(definition.key)
+                .width(150.0)
+                .selected_text(selected)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(value, ToggleState::Default, "默认");
+                    ui.selectable_value(value, ToggleState::Enabled, "启用");
+                    if two_sided {
+                        ui.selectable_value(value, ToggleState::Disabled, "禁用");
+                    }
+                });
+        });
+    }
+
+    fn render_builtin_param(&mut self, ui: &mut egui::Ui, id: ParamId) {
+        let definition = parameter(id);
+        let param_help = Self::parameter_help(id);
+        macro_rules! text_param {
+            ($field:ident) => {
+                Self::param_text(
+                    ui,
+                    definition.label,
+                    &mut self.preset.$field,
+                    param_help,
+                    &mut self.help_popup,
+                )
+            };
+        }
+        macro_rules! choice_param {
+            ($field:ident) => {
+                if let ControlKind::Choice(choices) = definition.control {
+                    Self::param_choice(
+                        ui,
+                        definition,
+                        &mut self.preset.$field,
+                        choices,
+                        param_help,
+                        &mut self.help_popup,
+                    )
+                }
+            };
+        }
+        macro_rules! toggle_param {
+            ($field:ident) => {
+                Self::param_toggle(
+                    ui,
+                    definition,
+                    &mut self.preset.$field,
+                    matches!(definition.control, ControlKind::TwoSidedToggle),
+                    param_help,
+                    &mut self.help_popup,
+                )
+            };
+        }
+        match id {
+            ParamId::Host => text_param!(host),
+            ParamId::Port => text_param!(port),
+            ParamId::Alias => text_param!(alias),
+            ParamId::Ngl => text_param!(ngl),
+            ParamId::NCpuMoe => {
+                ui.add_enabled_ui(self.preset.cpu_moe != ToggleState::Enabled, |ui| {
+                    Self::param_text(
+                        ui,
+                        definition.label,
+                        &mut self.preset.n_cpu_moe,
+                        param_help,
+                        &mut self.help_popup,
+                    );
+                });
+            }
+            ParamId::Threads => text_param!(threads),
+            ParamId::BatchSize => text_param!(batch_size),
+            ParamId::UbatchSize => text_param!(ubatch_size),
+            ParamId::Parallel => text_param!(parallel),
+            ParamId::CtxSize => text_param!(ctx_size),
+            ParamId::CacheTypeK => choice_param!(cache_type_k),
+            ParamId::CacheTypeV => choice_param!(cache_type_v),
+            ParamId::LoadMode => choice_param!(load_mode),
+            ParamId::FlashAttn => choice_param!(flash_attn),
+            ParamId::SpecType => choice_param!(spec_type),
+            ParamId::SpecDraftNMax => text_param!(spec_draft_n_max),
+            ParamId::SpecDraftNMin => text_param!(spec_draft_n_min),
+            ParamId::ImageMinTokens => text_param!(image_min_tokens),
+            ParamId::ImageMaxTokens => text_param!(image_max_tokens),
+            ParamId::Jinja => toggle_param!(jinja),
+            ParamId::Timeout => text_param!(timeout),
+            ParamId::SplitMode => text_param!(split_mode),
+            ParamId::TensorSplit => text_param!(tensor_split),
+            ParamId::MainGpu => text_param!(main_gpu),
+            ParamId::Device => text_param!(device),
+            ParamId::SpecDraftPMin => text_param!(spec_draft_p_min),
+            ParamId::SpecDraftPSplit => text_param!(spec_draft_p_split),
+            ParamId::WebUi => toggle_param!(web_ui),
+            ParamId::LogTimestamps => toggle_param!(log_timestamps),
+            ParamId::Offline => toggle_param!(offline),
+            ParamId::Verbose => toggle_param!(verbose),
+            ParamId::KvOffload => toggle_param!(kv_offload),
+            ParamId::KvUnified => toggle_param!(kv_unified),
+            ParamId::SwaFull => toggle_param!(swa_full),
+            ParamId::CpuMoe => toggle_param!(cpu_moe),
+            ParamId::ReasoningPreserve => toggle_param!(reasoning_preserve),
+        }
+    }
+
+    fn section_rows(&self, section: ParamSection) -> Vec<ParamRow> {
+        let builtins: &[String] = match section {
+            ParamSection::Common => &self.config.parameter_layout.common,
+            ParamSection::Other => &self.config.parameter_layout.other,
+            ParamSection::Extra => &[],
+        };
+        let mut rows: Vec<ParamRow> = builtins
+            .iter()
+            .filter(|key| parameter_by_key(key).is_some())
+            .cloned()
+            .map(ParamRow::Builtin)
+            .collect();
+        let mut extras: Vec<(usize, usize, u64)> = self
+            .preset
+            .extra_params
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.section == section)
+            .map(|(index, item)| (item.position, index, item.id))
+            .collect();
+        extras.sort_by_key(|(position, index, _)| (*position, *index));
+        for (position, _, id) in extras {
+            rows.insert(position.min(rows.len()), ParamRow::Extra(id));
+        }
+        rows
+    }
+
+    fn param_row_label(&self, row: &ParamRow) -> String {
+        match row {
+            ParamRow::Builtin(key) => parameter_by_key(key)
+                .map(|definition| definition.label.to_string())
+                .unwrap_or_else(|| key.clone()),
+            ParamRow::Extra(id) => self
+                .preset
+                .extra_params
+                .iter()
+                .find(|item| item.id == *id)
+                .map(|item| {
+                    if item.text.trim().is_empty() {
+                        "未填写额外参数".to_string()
+                    } else {
+                        item.text.clone()
+                    }
+                })
+                .unwrap_or_else(|| "额外参数".to_string()),
+        }
+    }
+
+    fn render_extra_param(&mut self, ui: &mut egui::Ui, id: u64) {
+        let Some(index) = self
+            .preset
+            .extra_params
+            .iter()
+            .position(|item| item.id == id)
+        else {
+            return;
+        };
+        let mut remove = false;
+        ui.horizontal(|ui| {
+            let item = &mut self.preset.extra_params[index];
+            ui.checkbox(&mut item.enabled, "")
+                .on_hover_text("启用额外参数");
+            let edit_width = (ui.available_width() - 36.0).max(100.0);
+            ui.add_sized(
+                [edit_width, 28.0],
+                egui::TextEdit::singleline(&mut item.text).hint_text("例如 --flash-attn on"),
+            );
+            if ui.button("×").on_hover_text("删除额外参数").clicked() {
+                remove = true;
+            }
+        });
+        if let Some(item) = self.preset.extra_params.get(index) {
+            if !item.text.trim().is_empty() {
+                if let Err(message) = parse_extra_args(&item.text) {
+                    ui.colored_label(CAUTION, message);
+                }
+            }
+        }
+        if remove {
+            self.preset.extra_params.remove(index);
+        }
+    }
+
+    fn render_normal_section(&mut self, ui: &mut egui::Ui, title: &str, section: ParamSection) {
+        let rows = self.section_rows(section);
+        let default_open = section != ParamSection::Other;
+        egui::CollapsingHeader::new(title)
+            .default_open(default_open)
+            .show(ui, |ui| {
+                if section == ParamSection::Extra {
+                    ui.horizontal(|ui| {
+                        if Self::small_button(ui, "+ 添加参数").clicked() {
+                            let next_id = self
+                                .preset
+                                .extra_params
+                                .iter()
+                                .map(|item| item.id)
+                                .max()
+                                .unwrap_or(0)
+                                .saturating_add(1);
+                            self.preset.extra_params.push(ExtraParam {
+                                id: next_id,
+                                section: ParamSection::Extra,
+                                position: rows.len(),
+                                ..ExtraParam::default()
+                            });
+                        }
+                        Self::help_button(
+                            ui,
+                            help(
+                                "额外参数",
+                                "每项是一行自由命令文本。启用的条目会在内置参数之后按顺序追加。",
+                                "取决于参数。",
+                                "取决于参数。",
+                                "取决于参数。",
+                            ),
+                            &mut self.help_popup,
+                        );
+                    });
+                }
+                for row in rows {
+                    match row {
+                        ParamRow::Builtin(key) => {
+                            if let Some(definition) = parameter_by_key(&key) {
+                                self.render_builtin_param(ui, definition.id);
+                            }
+                        }
+                        ParamRow::Extra(id) => self.render_extra_param(ui, id),
+                    }
+                    ui.separator();
+                }
+            });
+    }
+
+    fn render_layout_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        title: &str,
+        section: ParamSection,
+        pending_move: &mut Option<(ParamRow, ParamSection, Option<ParamRow>)>,
+    ) {
+        let rows = self.section_rows(section);
+        let frame = egui::Frame::new()
+            .fill(SNOW)
+            .stroke(Stroke::new(1.0_f32, SILVER_MIST))
+            .corner_radius(CornerRadius::same(6))
+            .inner_margin(egui::Margin::same(8));
+        frame.show(ui, |ui| {
+            let header = ui.horizontal(|ui| {
+                ui.strong(title);
+                ui.label(RichText::new("拖放到此处").color(GRAPHITE).size(12.0));
+            });
+            let primary_down = ui.ctx().input(|input| input.pointer.primary_down());
+            if header.response.hovered() && primary_down {
+                if let Some(dragged) = self.dragging_param.clone() {
+                    if !(section == ParamSection::Extra && matches!(dragged, ParamRow::Builtin(_)))
+                    {
+                        *pending_move = Some((dragged, section, None));
+                    }
+                }
+            }
+            for row in rows {
+                let label = self.param_row_label(&row);
+                let response = ui
+                    .horizontal(|ui| {
+                        ui.label(RichText::new("⋮⋮").color(GRAPHITE));
+                        ui.label(label);
+                    })
+                    .response
+                    .interact(egui::Sense::drag())
+                    .on_hover_cursor(CursorIcon::Grab);
+                if response.drag_started_by(PointerButton::Primary) {
+                    self.dragging_param = Some(row.clone());
+                }
+                if response.hovered() && primary_down {
+                    if let Some(dragged) = self.dragging_param.clone() {
+                        if dragged != row
+                            && !(section == ParamSection::Extra
+                                && matches!(dragged, ParamRow::Builtin(_)))
+                        {
+                            *pending_move = Some((dragged, section, Some(row.clone())));
+                        }
+                    }
+                }
+                ui.separator();
+            }
+        });
+    }
+
+    fn apply_param_move(
+        &mut self,
+        dragged: ParamRow,
+        target_section: ParamSection,
+        before: Option<ParamRow>,
+    ) {
+        if target_section == ParamSection::Extra && matches!(dragged, ParamRow::Builtin(_)) {
+            return;
+        }
+        let mut sections = [
+            (
+                ParamSection::Common,
+                self.section_rows(ParamSection::Common),
+            ),
+            (ParamSection::Other, self.section_rows(ParamSection::Other)),
+            (ParamSection::Extra, self.section_rows(ParamSection::Extra)),
+        ];
+        let old_sections = sections.clone();
+        for (_, rows) in &mut sections {
+            rows.retain(|row| row != &dragged);
+        }
+        let Some((_, target_rows)) = sections
+            .iter_mut()
+            .find(|(section, _)| *section == target_section)
+        else {
+            return;
+        };
+        let insert_at = before
+            .as_ref()
+            .and_then(|target| target_rows.iter().position(|row| row == target))
+            .unwrap_or(target_rows.len());
+        target_rows.insert(insert_at, dragged);
+        if sections == old_sections {
+            return;
+        }
+
+        self.config.parameter_layout.common = sections[0]
+            .1
+            .iter()
+            .filter_map(|row| match row {
+                ParamRow::Builtin(key) => Some(key.clone()),
+                ParamRow::Extra(_) => None,
+            })
+            .collect();
+        self.config.parameter_layout.other = sections[1]
+            .1
+            .iter()
+            .filter_map(|row| match row {
+                ParamRow::Builtin(key) => Some(key.clone()),
+                ParamRow::Extra(_) => None,
+            })
+            .collect();
+        for (section, rows) in sections {
+            for (position, row) in rows.into_iter().enumerate() {
+                if let ParamRow::Extra(id) = row {
+                    if let Some(item) = self
+                        .preset
+                        .extra_params
+                        .iter_mut()
+                        .find(|item| item.id == id)
+                    {
+                        item.section = section;
+                        item.position = position;
+                    }
+                }
+            }
+        }
+    }
+
+    fn params_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.heading(
+                RichText::new(if self.customize_param_layout {
+                    "自定义参数布局"
+                } else {
+                    "参数"
+                })
+                .size(17.0),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if self.customize_param_layout {
+                    if Self::small_button(ui, "完成").clicked() {
+                        self.customize_param_layout = false;
+                        self.dragging_param = None;
+                        self.save_app_config();
+                    }
+                    if Self::small_button(ui, "恢复默认").clicked() {
+                        self.config.parameter_layout = ParameterLayout::default();
+                    }
+                } else if Self::small_button(ui, "自定义布局").clicked() {
+                    self.customize_param_layout = true;
+                }
+            });
+        });
+        ui.add_space(6.0);
+        if self.customize_param_layout {
+            let mut pending_move = None;
+            self.render_layout_section(ui, "常用", ParamSection::Common, &mut pending_move);
+            ui.add_space(8.0);
+            self.render_layout_section(ui, "其他参数", ParamSection::Other, &mut pending_move);
+            ui.add_space(8.0);
+            self.render_layout_section(ui, "额外参数", ParamSection::Extra, &mut pending_move);
+            if let Some((dragged, section, before)) = pending_move {
+                self.apply_param_move(dragged, section, before);
+            }
+            if !ui.ctx().input(|input| input.pointer.primary_down()) {
+                self.dragging_param = None;
+            }
+        } else {
+            self.render_normal_section(ui, "常用", ParamSection::Common);
+            self.render_normal_section(ui, "其他参数", ParamSection::Other);
+            self.render_normal_section(ui, "额外参数", ParamSection::Extra);
+        }
     }
 }
 
@@ -1653,7 +1669,7 @@ impl eframe::App for LauncherApp {
                 egui::Frame::new()
                     .fill(SNOW)
                     .stroke(Stroke::new(
-                        1.0,
+                        1.0_f32,
                         rgba_to_color(self.config.appearance.top_border),
                     ))
                     .inner_margin(egui::Margin::symmetric(16, 12)),
@@ -1809,7 +1825,7 @@ impl eframe::App for LauncherApp {
                                 egui::Frame::new()
                                     .fill(fill)
                                     .stroke(Stroke::NONE)
-                                    .corner_radius(CornerRadius::same(12))
+                                    .corner_radius(CornerRadius::same(6))
                                     .inner_margin(egui::Margin::symmetric(7, 3))
                                     .show(ui, |ui| {
                                         ui.horizontal(|ui| {

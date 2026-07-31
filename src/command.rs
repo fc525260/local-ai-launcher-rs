@@ -1,5 +1,6 @@
-use crate::config::Preset;
+use crate::config::{Preset, ToggleState};
 use crate::discovery::ModelInfo;
+use crate::parameters::{parameter, ParamId};
 use std::path::{Path, PathBuf};
 
 fn push_pair(args: &mut Vec<String>, flag: &str, value: &str) {
@@ -7,6 +8,10 @@ fn push_pair(args: &mut Vec<String>, flag: &str, value: &str) {
         args.push(flag.to_string());
         args.push(value.trim().to_string());
     }
+}
+
+fn push_param_pair(args: &mut Vec<String>, id: ParamId, value: &str) {
+    push_pair(args, parameter(id).flag, value);
 }
 
 fn model_arg(models_dir: &Path, rel: &str) -> String {
@@ -31,11 +36,16 @@ fn is_mtp_draft(rel: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn pair_value<'a>(value: &'a str, mtp_default: Option<&'a str>) -> Option<&'a str> {
-    if value.trim().is_empty() {
-        mtp_default
-    } else {
-        Some(value.trim())
+fn push_toggle(args: &mut Vec<String>, state: ToggleState, id: ParamId) {
+    let definition = parameter(id);
+    match state {
+        ToggleState::Default => {}
+        ToggleState::Enabled => args.push(definition.flag.to_string()),
+        ToggleState::Disabled => {
+            if let Some(flag) = definition.negative_flag {
+                args.push(flag.to_string());
+            }
+        }
     }
 }
 
@@ -72,97 +82,73 @@ pub fn build_args(
     }
     let mtp_defaults = draft_model.is_some_and(is_mtp_draft);
 
-    push_pair(&mut args, "--gpu-layers", &preset.ngl);
-    push_pair(&mut args, "--n-cpu-moe", &preset.n_cpu_moe);
-    push_pair(&mut args, "--threads", &preset.threads);
-    push_pair(&mut args, "--batch-size", &preset.batch_size);
-    push_pair(&mut args, "--ubatch-size", &preset.ubatch_size);
-    push_pair(&mut args, "--parallel", &preset.parallel);
-    push_pair(&mut args, "--ctx-size", &preset.ctx_size);
-    push_pair(&mut args, "--timeout", &preset.timeout);
-    push_pair(&mut args, "--alias", &preset.alias);
-    push_pair(&mut args, "--cache-type-k", &preset.cache_type_k);
-    push_pair(&mut args, "--cache-type-v", &preset.cache_type_v);
-    if let Some(value) = pair_value(&preset.spec_type, mtp_defaults.then_some("draft-mtp")) {
-        push_pair(&mut args, "--spec-type", value);
+    push_param_pair(&mut args, ParamId::Ngl, &preset.ngl);
+    if preset.cpu_moe == ToggleState::Enabled {
+        push_toggle(&mut args, preset.cpu_moe, ParamId::CpuMoe);
+    } else {
+        push_param_pair(&mut args, ParamId::NCpuMoe, &preset.n_cpu_moe);
     }
-    if let Some(value) = pair_value(&preset.spec_draft_n_max, mtp_defaults.then_some("3")) {
-        push_pair(&mut args, "--spec-draft-n-max", value);
+    push_param_pair(&mut args, ParamId::Threads, &preset.threads);
+    push_param_pair(&mut args, ParamId::BatchSize, &preset.batch_size);
+    push_param_pair(&mut args, ParamId::UbatchSize, &preset.ubatch_size);
+    push_param_pair(&mut args, ParamId::Parallel, &preset.parallel);
+    push_param_pair(&mut args, ParamId::CtxSize, &preset.ctx_size);
+    push_param_pair(&mut args, ParamId::Timeout, &preset.timeout);
+    push_param_pair(&mut args, ParamId::Alias, &preset.alias);
+    push_param_pair(&mut args, ParamId::CacheTypeK, &preset.cache_type_k);
+    push_param_pair(&mut args, ParamId::CacheTypeV, &preset.cache_type_v);
+    if preset.spec_type.trim().is_empty() && mtp_defaults {
+        push_param_pair(&mut args, ParamId::SpecType, "draft-mtp");
+    } else {
+        push_param_pair(&mut args, ParamId::SpecType, &preset.spec_type);
     }
-    push_pair(&mut args, "--spec-draft-n-min", &preset.spec_draft_n_min);
-    if let Some(value) = pair_value(&preset.spec_draft_p_min, mtp_defaults.then_some("0.7")) {
-        push_pair(&mut args, "--spec-draft-p-min", value);
-    }
-    push_pair(
+    push_param_pair(&mut args, ParamId::SpecDraftNMax, &preset.spec_draft_n_max);
+    push_param_pair(&mut args, ParamId::SpecDraftNMin, &preset.spec_draft_n_min);
+    push_param_pair(&mut args, ParamId::SpecDraftPMin, &preset.spec_draft_p_min);
+    push_param_pair(
         &mut args,
-        "--spec-draft-p-split",
+        ParamId::SpecDraftPSplit,
         &preset.spec_draft_p_split,
     );
     if use_mm {
-        push_pair(&mut args, "--image-min-tokens", &preset.image_min_tokens);
-        push_pair(&mut args, "--image-max-tokens", &preset.image_max_tokens);
+        push_param_pair(&mut args, ParamId::ImageMinTokens, &preset.image_min_tokens);
+        push_param_pair(&mut args, ParamId::ImageMaxTokens, &preset.image_max_tokens);
     }
-    push_pair(&mut args, "--host", &preset.host);
-    push_pair(&mut args, "--port", &preset.port);
-    push_pair(&mut args, "--split-mode", &preset.split_mode);
-    push_pair(&mut args, "--tensor-split", &preset.tensor_split);
-    push_pair(&mut args, "--main-gpu", &preset.main_gpu);
-    push_pair(&mut args, "--device", &preset.device);
+    push_param_pair(&mut args, ParamId::Host, &preset.host);
+    push_param_pair(&mut args, ParamId::Port, &preset.port);
+    push_param_pair(&mut args, ParamId::SplitMode, &preset.split_mode);
+    push_param_pair(&mut args, ParamId::TensorSplit, &preset.tensor_split);
+    push_param_pair(&mut args, ParamId::MainGpu, &preset.main_gpu);
+    push_param_pair(&mut args, ParamId::Device, &preset.device);
+    push_param_pair(&mut args, ParamId::LoadMode, &preset.load_mode);
+    push_param_pair(&mut args, ParamId::FlashAttn, &preset.flash_attn);
 
-    if preset.web_ui {
-        args.push("--ui".to_string());
-    } else {
-        args.push("--no-ui".to_string());
-    }
-    if preset.log_timestamps {
-        args.push("--log-timestamps".to_string());
-    } else {
-        args.push("--no-log-timestamps".to_string());
-    }
-    if preset.offline {
-        args.push("--offline".to_string());
-    }
-    if preset.verbose {
-        args.push("--verbose".to_string());
-    }
-    if preset.kv_offload {
-        args.push("--kv-offload".to_string());
-    } else {
-        args.push("--no-kv-offload".to_string());
-    }
-    if preset.mlock {
-        args.push("--mlock".to_string());
-    }
-    if preset.mmap {
-        args.push("--mmap".to_string());
-    } else {
-        args.push("--no-mmap".to_string());
-    }
-    if preset.kv_unified {
-        args.push("--kv-unified".to_string());
-    }
-    if preset.swa_full {
-        args.push("--swa-full".to_string());
-    }
-    if preset.cpu_moe {
-        args.push("--cpu-moe".to_string());
-    }
-    if preset.jinja {
-        args.push("--jinja".to_string());
-    }
-    for part in preset
-        .extra_args
-        .lines()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .flat_map(split_extra_args)
+    push_toggle(&mut args, preset.web_ui, ParamId::WebUi);
+    push_toggle(&mut args, preset.log_timestamps, ParamId::LogTimestamps);
+    push_toggle(&mut args, preset.offline, ParamId::Offline);
+    push_toggle(&mut args, preset.verbose, ParamId::Verbose);
+    push_toggle(&mut args, preset.kv_offload, ParamId::KvOffload);
+    push_toggle(&mut args, preset.kv_unified, ParamId::KvUnified);
+    push_toggle(&mut args, preset.swa_full, ParamId::SwaFull);
+    push_toggle(&mut args, preset.jinja, ParamId::Jinja);
+    push_toggle(
+        &mut args,
+        preset.reasoning_preserve,
+        ParamId::ReasoningPreserve,
+    );
+    for item in preset
+        .extra_params
+        .iter()
+        .filter(|item| item.enabled && !item.text.trim().is_empty())
     {
-        args.push(part);
+        if let Ok(parts) = parse_extra_args(&item.text) {
+            args.extend(parts);
+        }
     }
     args
 }
 
-fn split_extra_args(line: &str) -> Vec<String> {
+pub fn parse_extra_args(line: &str) -> Result<Vec<String>, &'static str> {
     let mut result = Vec::new();
     let mut current = String::new();
     let mut in_quotes = false;
@@ -188,10 +174,13 @@ fn split_extra_args(line: &str) -> Vec<String> {
     if escape {
         current.push('\\');
     }
+    if in_quotes {
+        return Err("双引号未闭合");
+    }
     if !current.is_empty() {
         result.push(current);
     }
-    result
+    Ok(result)
 }
 
 pub fn command_preview(args: &[String], llama_cpp_dir: &Path) -> String {
@@ -259,14 +248,22 @@ mod tests {
 
     #[test]
     fn splits_extra_args_by_whitespace() {
-        assert_eq!(split_extra_args("-c 1"), vec!["-c", "1"]);
+        assert_eq!(parse_extra_args("-c 1").unwrap(), vec!["-c", "1"]);
     }
 
     #[test]
     fn keeps_quoted_extra_arg_values_together() {
         assert_eq!(
-            split_extra_args("--alias \"local model\""),
+            parse_extra_args("--alias \"local model\"").unwrap(),
             vec!["--alias", "local model"]
+        );
+    }
+
+    #[test]
+    fn rejects_unclosed_extra_arg_quotes() {
+        assert_eq!(
+            parse_extra_args("--alias \"local model"),
+            Err("双引号未闭合")
         );
     }
 
@@ -335,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn mtp_draft_adds_default_speculative_args_when_empty() {
+    fn mtp_draft_adds_only_speculative_type_when_empty() {
         let model = ModelInfo {
             id: "main".to_string(),
             rel_path: "main.gguf".to_string(),
@@ -355,12 +352,8 @@ mod tests {
         assert!(args
             .windows(2)
             .any(|pair| pair == ["--spec-type", "draft-mtp"]));
-        assert!(args
-            .windows(2)
-            .any(|pair| pair == ["--spec-draft-n-max", "3"]));
-        assert!(args
-            .windows(2)
-            .any(|pair| pair == ["--spec-draft-p-min", "0.7"]));
+        assert!(!args.contains(&"--spec-draft-n-max".to_string()));
+        assert!(!args.contains(&"--spec-draft-p-min".to_string()));
         assert!(args.contains(&"--jinja".to_string()));
     }
 
@@ -375,19 +368,94 @@ mod tests {
             draft_model: Some("mtp-draft.gguf".to_string()),
         };
         let preset = Preset {
-            spec_type: "draft".to_string(),
+            spec_type: "draft-simple".to_string(),
             spec_draft_n_max: "5".to_string(),
             spec_draft_p_min: "0.5".to_string(),
             ..Default::default()
         };
         let args = build_args(&model, &preset, Path::new("C:\\models"), false, None);
 
-        assert!(args.windows(2).any(|pair| pair == ["--spec-type", "draft"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--spec-type", "draft-simple"]));
         assert!(args
             .windows(2)
             .any(|pair| pair == ["--spec-draft-n-max", "5"]));
         assert!(args
             .windows(2)
             .any(|pair| pair == ["--spec-draft-p-min", "0.5"]));
+    }
+
+    #[test]
+    fn emits_current_load_flash_and_reasoning_parameters() {
+        let model = ModelInfo {
+            id: "main".to_string(),
+            rel_path: "main.gguf".to_string(),
+            display_name: "main".to_string(),
+            size_label: String::new(),
+            mmproj: None,
+            draft_model: None,
+        };
+        let preset = Preset {
+            load_mode: "mmap+mlock".to_string(),
+            flash_attn: "on".to_string(),
+            reasoning_preserve: ToggleState::Enabled,
+            ..Default::default()
+        };
+
+        let args = build_args(&model, &preset, Path::new("C:\\models"), false, None);
+
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--load-mode", "mmap+mlock"]));
+        assert!(args.windows(2).any(|pair| pair == ["--flash-attn", "on"]));
+        assert!(args.contains(&"--reasoning-preserve".to_string()));
+        assert!(!args.contains(&"--mmap".to_string()));
+        assert!(!args.contains(&"--mlock".to_string()));
+    }
+
+    #[test]
+    fn all_cpu_moe_suppresses_layer_count() {
+        let model = ModelInfo {
+            id: "main".to_string(),
+            rel_path: "main.gguf".to_string(),
+            display_name: "main".to_string(),
+            size_label: String::new(),
+            mmproj: None,
+            draft_model: None,
+        };
+        let preset = Preset {
+            n_cpu_moe: "12".to_string(),
+            cpu_moe: ToggleState::Enabled,
+            ..Default::default()
+        };
+
+        let args = build_args(&model, &preset, Path::new("C:\\models"), false, None);
+
+        assert!(args.contains(&"--cpu-moe".to_string()));
+        assert!(!args.contains(&"--n-cpu-moe".to_string()));
+    }
+
+    #[test]
+    fn emits_every_supported_speculative_type() {
+        let model = ModelInfo {
+            id: "main".to_string(),
+            rel_path: "main.gguf".to_string(),
+            display_name: "main".to_string(),
+            size_label: String::new(),
+            mmproj: None,
+            draft_model: None,
+        };
+
+        for spec_type in crate::config::SPEC_TYPES {
+            let preset = Preset {
+                spec_type: (*spec_type).to_string(),
+                ..Default::default()
+            };
+            let args = build_args(&model, &preset, Path::new("C:\\models"), false, None);
+            assert!(args
+                .windows(2)
+                .any(|pair| pair == ["--spec-type", *spec_type]));
+        }
     }
 }
