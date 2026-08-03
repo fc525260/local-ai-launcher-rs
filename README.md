@@ -12,7 +12,7 @@ Rust/egui 编写的 llama.cpp 本地模型 GUI 启动器。
 - 支持为当前主模型添加/修改跨文件夹 draft 草稿模型，用于 MTP、dflash 等推测解码草稿模型。
 - 自动识别到 MTP draft 模型且推测类型保持“默认”时，仅自动添加 `--spec-type draft-mtp`；草稿 N 和概率参数保留 llama.cpp 默认值。
 - 支持默认参数预设和模型专属参数预设。
-- 参数面板分为“常用”“其他参数”“额外参数”三部分；内置参数可进入布局编辑模式后跨常用/其他拖动，自由文本参数按预设逐条保存。
+- 参数面板分为“常用”“其他参数”“额外参数”三部分；内置参数可通过拖动句柄在常用/其他之间排序，自由文本参数可跨分区移动，默认和当前模型预设分别保存各自的参数位置。
 - 使用当前 `llama-server` 参数：`--load-mode`、`--flash-attn`、`--reasoning-preserve` 和固定推测类型选项；旧 `--mmap`、`--no-mmap`、`--mlock` 不再由启动器生成。
 - 支持右键重命名模型显示名、打开模型所在位置、隐藏模型。
 - 支持拖动调整模型显示顺序。
@@ -57,8 +57,8 @@ Copy-Item target\release\local_ai_launcher.exe dist\本地AI启动器.exe -Force
 推送 `v*` 标签会触发 GitHub Actions 自动构建 Windows 单文件 exe，并发布到 GitHub Release。Release 下载资产名为 `local-ai-launcher.exe`：
 
 ```powershell
-git tag v0.1.5
-git push origin v0.1.5
+git tag v0.1.6
+git push origin v0.1.6
 ```
 
 也可以在 GitHub Actions 页面手动运行 `Release` 工作流生成构建产物。

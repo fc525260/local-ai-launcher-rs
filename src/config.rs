@@ -5,7 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 
 const CONFIG_FILE: &str = "local-ai-launcher-config.json";
-const CONFIG_VERSION: u32 = 2;
+const CONFIG_VERSION: u32 = 3;
 
 pub const LOAD_MODES: &[&str] = &["none", "mmap", "mlock", "mmap+mlock", "dio"];
 pub const FLASH_ATTN_MODES: &[&str] = &["on", "off", "auto"];
@@ -105,7 +105,7 @@ impl Default for ExtraParam {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ParameterLayout {
     pub common: Vec<String>,
@@ -166,6 +166,7 @@ pub struct Preset {
     pub cpu_moe: ToggleState,
     pub jinja: ToggleState,
     pub reasoning_preserve: ToggleState,
+    pub parameter_layout: ParameterLayout,
     pub extra_params: Vec<ExtraParam>,
 }
 
@@ -208,6 +209,7 @@ impl Default for Preset {
             cpu_moe: ToggleState::Default,
             jinja: ToggleState::Enabled,
             reasoning_preserve: ToggleState::Default,
+            parameter_layout: ParameterLayout::default(),
             extra_params: Vec::new(),
         }
     }
@@ -263,7 +265,6 @@ pub struct AppConfig {
     pub draft_models: Vec<String>,
     #[serde(default)]
     pub model_draft_overrides: BTreeMap<String, String>,
-    pub parameter_layout: ParameterLayout,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -292,7 +293,6 @@ impl Default for AppConfig {
             model_presets: BTreeMap::new(),
             draft_models: Vec::new(),
             model_draft_overrides: BTreeMap::new(),
-            parameter_layout: ParameterLayout::default(),
         }
     }
 }
@@ -326,9 +326,17 @@ fn migrate_config_value(value: &mut Value) {
     let Some(root) = value.as_object_mut() else {
         return;
     };
+    let legacy_layout = root.remove("parameter_layout").unwrap_or_else(|| {
+        serde_json::to_value(ParameterLayout::default()).expect("default layout serializes")
+    });
     for key in ["global_presets", "model_presets"] {
         if let Some(presets) = root.get_mut(key).and_then(Value::as_object_mut) {
             for preset in presets.values_mut() {
+                if let Some(fields) = preset.as_object_mut() {
+                    fields
+                        .entry("parameter_layout".to_string())
+                        .or_insert_with(|| legacy_layout.clone());
+                }
                 migrate_preset_value(preset);
             }
         }
@@ -418,12 +426,12 @@ fn normalize_presets(config: &mut AppConfig) {
     config.global_presets.insert("默认".to_string(), default);
     config.selected_preset = "默认".to_string();
     config.config_version = CONFIG_VERSION;
-    normalize_parameter_layout(&mut config.parameter_layout);
     for preset in config
         .global_presets
         .values_mut()
         .chain(config.model_presets.values_mut())
     {
+        normalize_parameter_layout(&mut preset.parameter_layout);
         normalize_extra_param_ids(preset);
         normalize_preset_choices(preset);
     }
@@ -534,6 +542,48 @@ mod tests {
         assert_eq!(
             layout.common.len() + layout.other.len(),
             DEFAULT_COMMON_PARAM_IDS.len() + DEFAULT_OTHER_PARAM_IDS.len()
+        );
+    }
+
+    #[test]
+    fn migrates_root_layout_into_default_and_model_presets() {
+        let mut value = serde_json::json!({
+            "config_version": 2,
+            "parameter_layout": {
+                "common": ["port", "host"],
+                "other": ["ngl"]
+            },
+            "global_presets": {
+                "默认": {}
+            },
+            "model_presets": {
+                "model-a": {}
+            }
+        });
+
+        migrate_config_value(&mut value);
+        assert!(value.get("parameter_layout").is_none());
+        let mut config: AppConfig = serde_json::from_value(value).expect("migrated config");
+        normalize_presets(&mut config);
+
+        let default_layout = &config.global_presets["默认"].parameter_layout;
+        let model_layout = &config.model_presets["model-a"].parameter_layout;
+        assert_eq!(default_layout.common[0..2], ["port", "host"]);
+        assert_eq!(model_layout.common[0..2], ["port", "host"]);
+        assert_eq!(default_layout.other[0], "ngl");
+        assert_eq!(model_layout.other[0], "ngl");
+    }
+
+    #[test]
+    fn preset_layouts_are_independent() {
+        let mut config = AppConfig::default();
+        let mut model = Preset::default();
+        model.parameter_layout.common.swap(0, 1);
+        config.model_presets.insert("model-a".to_string(), model);
+
+        assert_ne!(
+            config.global_presets["默认"].parameter_layout,
+            config.model_presets["model-a"].parameter_layout
         );
     }
 

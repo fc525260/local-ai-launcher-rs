@@ -13,6 +13,7 @@ use crate::server::{self, ServerEvent, ServerProcess};
 use eframe::egui::{
     self, Color32, CornerRadius, CursorIcon, FontId, PointerButton, RichText, Stroke, Vec2,
 };
+use std::collections::BTreeMap;
 use std::fs;
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
@@ -27,6 +28,9 @@ const SILVER_MIST: Color32 = Color32::from_rgb(232, 232, 237);
 const AZURE: Color32 = Color32::from_rgb(0, 113, 227);
 const COBALT_LINK: Color32 = Color32::from_rgb(0, 102, 204);
 const CAUTION: Color32 = Color32::from_rgb(182, 68, 0);
+const PARAM_LABEL_WIDTH: f32 = 128.0;
+const PARAM_CONTROL_WIDTH: f32 = 150.0;
+const PARAM_ROW_HEIGHT: f32 = 26.0;
 
 pub fn configure_fonts(ctx: &egui::Context) {
     configure_theme(ctx);
@@ -209,6 +213,87 @@ enum ParamRow {
     Extra(u64),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParamDropTarget {
+    section: ParamSection,
+    index: usize,
+}
+
+fn move_param_row(
+    sections: &mut [(ParamSection, Vec<ParamRow>); 3],
+    dragged: &ParamRow,
+    target: ParamDropTarget,
+) -> bool {
+    if target.section == ParamSection::Extra && matches!(dragged, ParamRow::Builtin(_)) {
+        return false;
+    }
+    let Some((source_section, source_index)) = sections.iter().find_map(|(section, rows)| {
+        rows.iter()
+            .position(|row| row == dragged)
+            .map(|index| (*section, index))
+    }) else {
+        return false;
+    };
+    if !sections
+        .iter()
+        .any(|(section, _)| *section == target.section)
+    {
+        return false;
+    }
+
+    let before = sections.clone();
+    for (_, rows) in sections.iter_mut() {
+        rows.retain(|row| row != dragged);
+    }
+    let (_, target_rows) = sections
+        .iter_mut()
+        .find(|(section, _)| *section == target.section)
+        .expect("target section was validated");
+    let adjusted_index = if source_section == target.section && source_index < target.index {
+        target.index.saturating_sub(1)
+    } else {
+        target.index
+    };
+    target_rows.insert(adjusted_index.min(target_rows.len()), dragged.clone());
+    *sections != before
+}
+
+fn copy_preset_layout(source: &Preset, target: &mut Preset) {
+    target.parameter_layout = source.parameter_layout.clone();
+    let extra_placements: BTreeMap<u64, (ParamSection, usize)> = source
+        .extra_params
+        .iter()
+        .map(|item| (item.id, (item.section, item.position)))
+        .collect();
+    for item in &mut target.extra_params {
+        if let Some((section, position)) = extra_placements.get(&item.id) {
+            item.section = *section;
+            item.position = *position;
+        }
+    }
+}
+
+fn restore_preset_layout(preset: &mut Preset) {
+    preset.parameter_layout = ParameterLayout::default();
+    for (position, item) in preset.extra_params.iter_mut().enumerate() {
+        item.section = ParamSection::Extra;
+        item.position = position;
+    }
+}
+
+fn drag_auto_scroll_delta(pointer_y: f32, top: f32, bottom: f32, delta_time: f32) -> f32 {
+    const EDGE_SIZE: f32 = 56.0;
+    const MAX_SPEED: f32 = 760.0;
+    let intensity = if pointer_y < top + EDGE_SIZE {
+        ((top + EDGE_SIZE - pointer_y) / EDGE_SIZE).clamp(0.0, 1.0)
+    } else if pointer_y > bottom - EDGE_SIZE {
+        -((pointer_y - (bottom - EDGE_SIZE)) / EDGE_SIZE).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    intensity * MAX_SPEED * delta_time.clamp(0.0, 0.05)
+}
+
 impl LauncherApp {
     pub fn new() -> Self {
         let mut config = load_config();
@@ -328,6 +413,27 @@ impl LauncherApp {
         if let Err(err) = save_config(&self.config) {
             self.warnings.push(format!("保存配置失败: {err}"));
         }
+    }
+
+    fn persist_active_layout(&mut self) {
+        let model_id = if self.active_preset_label == "当前模型预设" {
+            self.selected_model().map(|model| model.id.clone())
+        } else {
+            None
+        };
+        let stored_preset = if let Some(model_id) = model_id {
+            self.config.model_presets.get_mut(&model_id)
+        } else {
+            self.config.global_presets.get_mut("默认")
+        };
+        if let Some(stored_preset) = stored_preset {
+            copy_preset_layout(&self.preset, stored_preset);
+        }
+        self.save_app_config();
+    }
+
+    fn restore_active_layout(&mut self) {
+        restore_preset_layout(&mut self.preset);
     }
 
     fn add_manual_model(&mut self) {
@@ -668,11 +774,14 @@ impl LauncherApp {
     ) {
         ui.horizontal(|ui| {
             ui.add_sized(
-                [82.0, 22.0],
+                [PARAM_LABEL_WIDTH, PARAM_ROW_HEIGHT],
                 egui::Label::new(RichText::new(label).color(GRAPHITE).size(13.0)),
             );
             Self::help_button(ui, help, popup);
-            ui.add_sized([148.0, 24.0], egui::TextEdit::singleline(value));
+            ui.add_sized(
+                [PARAM_CONTROL_WIDTH, PARAM_ROW_HEIGHT],
+                egui::TextEdit::singleline(value),
+            );
         });
     }
 
@@ -1217,12 +1326,12 @@ impl LauncherApp {
         };
         ui.horizontal(|ui| {
             ui.add_sized(
-                [128.0, 26.0],
+                [PARAM_LABEL_WIDTH, PARAM_ROW_HEIGHT],
                 egui::Label::new(RichText::new(definition.label).color(GRAPHITE).size(13.0)),
             );
             Self::help_button(ui, help, popup);
             egui::ComboBox::from_id_salt(definition.key)
-                .width(150.0)
+                .width(PARAM_CONTROL_WIDTH)
                 .selected_text(selected)
                 .show_ui(ui, |ui| {
                     ui.selectable_value(value, String::new(), "默认");
@@ -1248,12 +1357,12 @@ impl LauncherApp {
         };
         ui.horizontal(|ui| {
             ui.add_sized(
-                [128.0, 26.0],
+                [PARAM_LABEL_WIDTH, PARAM_ROW_HEIGHT],
                 egui::Label::new(RichText::new(definition.label).color(GRAPHITE).size(13.0)),
             );
             Self::help_button(ui, help, popup);
             egui::ComboBox::from_id_salt(definition.key)
-                .width(150.0)
+                .width(PARAM_CONTROL_WIDTH)
                 .selected_text(selected)
                 .show_ui(ui, |ui| {
                     ui.selectable_value(value, ToggleState::Default, "默认");
@@ -1357,8 +1466,8 @@ impl LauncherApp {
 
     fn section_rows(&self, section: ParamSection) -> Vec<ParamRow> {
         let builtins: &[String] = match section {
-            ParamSection::Common => &self.config.parameter_layout.common,
-            ParamSection::Other => &self.config.parameter_layout.other,
+            ParamSection::Common => &self.preset.parameter_layout.common,
+            ParamSection::Other => &self.preset.parameter_layout.other,
             ParamSection::Extra => &[],
         };
         let mut rows: Vec<ParamRow> = builtins
@@ -1494,7 +1603,7 @@ impl LauncherApp {
         ui: &mut egui::Ui,
         title: &str,
         section: ParamSection,
-        pending_move: &mut Option<(ParamRow, ParamSection, Option<ParamRow>)>,
+        drop_target: &mut Option<ParamDropTarget>,
     ) {
         let rows = self.section_rows(section);
         let frame = egui::Frame::new()
@@ -1503,56 +1612,118 @@ impl LauncherApp {
             .corner_radius(CornerRadius::same(6))
             .inner_margin(egui::Margin::same(8));
         frame.show(ui, |ui| {
+            ui.style_mut().interaction.selectable_labels = false;
             let header = ui.horizontal(|ui| {
-                ui.strong(title);
-                ui.label(RichText::new("拖放到此处").color(GRAPHITE).size(12.0));
+                ui.add(egui::Label::new(RichText::new(title).strong()).selectable(false));
+                ui.add(
+                    egui::Label::new(RichText::new("拖放到此处").color(GRAPHITE).size(12.0))
+                        .selectable(false),
+                );
             });
-            let primary_down = ui.ctx().input(|input| input.pointer.primary_down());
-            if header.response.hovered() && primary_down {
-                if let Some(dragged) = self.dragging_param.clone() {
-                    if !(section == ParamSection::Extra && matches!(dragged, ParamRow::Builtin(_)))
-                    {
-                        *pending_move = Some((dragged, section, None));
-                    }
+            let pointer_position = ui.ctx().pointer_interact_pos();
+            if let (Some(dragged), Some(pointer)) = (self.dragging_param.as_ref(), pointer_position)
+            {
+                if header.response.rect.contains(pointer)
+                    && !(section == ParamSection::Extra && matches!(dragged, ParamRow::Builtin(_)))
+                {
+                    *drop_target = Some(ParamDropTarget { section, index: 0 });
+                    let y = header.response.rect.bottom();
+                    ui.painter().line_segment(
+                        [
+                            egui::pos2(header.response.rect.left(), y),
+                            egui::pos2(header.response.rect.right(), y),
+                        ],
+                        Stroke::new(2.0_f32, AZURE),
+                    );
                 }
             }
-            for row in rows {
+            for (index, row) in rows.iter().enumerate() {
                 let label = self.param_row_label(&row);
-                let response = ui
-                    .horizontal(|ui| {
-                        ui.label(RichText::new("⋮⋮").color(GRAPHITE));
-                        ui.label(label);
-                    })
-                    .response
-                    .interact(egui::Sense::drag())
-                    .on_hover_cursor(CursorIcon::Grab);
-                if response.drag_started_by(PointerButton::Primary) {
+                let row_response = ui.horizontal(|ui| {
+                    let handle = ui
+                        .add(
+                            egui::Label::new(
+                                RichText::new("::").color(GRAPHITE).monospace().strong(),
+                            )
+                            .selectable(false)
+                            .sense(egui::Sense::drag()),
+                        )
+                        .on_hover_cursor(CursorIcon::Grab)
+                        .on_hover_text("拖动参数位置");
+                    ui.add(egui::Label::new(label).selectable(false));
+                    handle
+                });
+                if row_response.inner.drag_started_by(PointerButton::Primary) {
                     self.dragging_param = Some(row.clone());
                 }
-                if response.hovered() && primary_down {
-                    if let Some(dragged) = self.dragging_param.clone() {
-                        if dragged != row
-                            && !(section == ParamSection::Extra
-                                && matches!(dragged, ParamRow::Builtin(_)))
-                        {
-                            *pending_move = Some((dragged, section, Some(row.clone())));
-                        }
+                if self.dragging_param.as_ref() == Some(row) {
+                    ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+                    let row_rect = row_response.response.rect;
+                    let selected_rect = egui::Rect::from_min_max(
+                        egui::pos2(row_rect.left() - 3.0, row_rect.top() - 3.0),
+                        egui::pos2(ui.max_rect().right(), row_rect.bottom() + 3.0),
+                    );
+                    ui.painter().rect_stroke(
+                        selected_rect,
+                        CornerRadius::same(4),
+                        Stroke::new(2.0_f32, AZURE),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+                if let (Some(dragged), Some(pointer)) =
+                    (self.dragging_param.as_ref(), pointer_position)
+                {
+                    if row_response.response.rect.contains(pointer)
+                        && !(section == ParamSection::Extra
+                            && matches!(dragged, ParamRow::Builtin(_)))
+                    {
+                        let insert_after = pointer.y > row_response.response.rect.center().y;
+                        let target_index = index + usize::from(insert_after);
+                        *drop_target = Some(ParamDropTarget {
+                            section,
+                            index: target_index,
+                        });
+                        let y = if insert_after {
+                            row_response.response.rect.bottom()
+                        } else {
+                            row_response.response.rect.top()
+                        };
+                        ui.painter().line_segment(
+                            [
+                                egui::pos2(row_response.response.rect.left(), y),
+                                egui::pos2(row_response.response.rect.right(), y),
+                            ],
+                            Stroke::new(2.0_f32, AZURE),
+                        );
                     }
                 }
                 ui.separator();
             }
+            let append_target =
+                ui.allocate_response(egui::vec2(ui.available_width(), 18.0), egui::Sense::hover());
+            if let (Some(dragged), Some(pointer)) = (self.dragging_param.as_ref(), pointer_position)
+            {
+                if append_target.rect.contains(pointer)
+                    && !(section == ParamSection::Extra && matches!(dragged, ParamRow::Builtin(_)))
+                {
+                    *drop_target = Some(ParamDropTarget {
+                        section,
+                        index: rows.len(),
+                    });
+                    let y = append_target.rect.top();
+                    ui.painter().line_segment(
+                        [
+                            egui::pos2(append_target.rect.left(), y),
+                            egui::pos2(append_target.rect.right(), y),
+                        ],
+                        Stroke::new(2.0_f32, AZURE),
+                    );
+                }
+            }
         });
     }
 
-    fn apply_param_move(
-        &mut self,
-        dragged: ParamRow,
-        target_section: ParamSection,
-        before: Option<ParamRow>,
-    ) {
-        if target_section == ParamSection::Extra && matches!(dragged, ParamRow::Builtin(_)) {
-            return;
-        }
+    fn apply_param_move(&mut self, dragged: ParamRow, target: ParamDropTarget) {
         let mut sections = [
             (
                 ParamSection::Common,
@@ -1561,26 +1732,11 @@ impl LauncherApp {
             (ParamSection::Other, self.section_rows(ParamSection::Other)),
             (ParamSection::Extra, self.section_rows(ParamSection::Extra)),
         ];
-        let old_sections = sections.clone();
-        for (_, rows) in &mut sections {
-            rows.retain(|row| row != &dragged);
-        }
-        let Some((_, target_rows)) = sections
-            .iter_mut()
-            .find(|(section, _)| *section == target_section)
-        else {
-            return;
-        };
-        let insert_at = before
-            .as_ref()
-            .and_then(|target| target_rows.iter().position(|row| row == target))
-            .unwrap_or(target_rows.len());
-        target_rows.insert(insert_at, dragged);
-        if sections == old_sections {
+        if !move_param_row(&mut sections, &dragged, target) {
             return;
         }
 
-        self.config.parameter_layout.common = sections[0]
+        self.preset.parameter_layout.common = sections[0]
             .1
             .iter()
             .filter_map(|row| match row {
@@ -1588,7 +1744,7 @@ impl LauncherApp {
                 ParamRow::Extra(_) => None,
             })
             .collect();
-        self.config.parameter_layout.other = sections[1]
+        self.preset.parameter_layout.other = sections[1]
             .1
             .iter()
             .filter_map(|row| match row {
@@ -1613,7 +1769,7 @@ impl LauncherApp {
         }
     }
 
-    fn params_ui(&mut self, ui: &mut egui::Ui) {
+    fn params_toolbar_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.heading(
                 RichText::new(if self.customize_param_layout {
@@ -1628,29 +1784,56 @@ impl LauncherApp {
                     if Self::small_button(ui, "完成").clicked() {
                         self.customize_param_layout = false;
                         self.dragging_param = None;
-                        self.save_app_config();
+                        self.persist_active_layout();
                     }
                     if Self::small_button(ui, "恢复默认").clicked() {
-                        self.config.parameter_layout = ParameterLayout::default();
+                        self.restore_active_layout();
                     }
                 } else if Self::small_button(ui, "自定义布局").clicked() {
                     self.customize_param_layout = true;
                 }
             });
         });
-        ui.add_space(6.0);
+    }
+
+    fn params_content_ui(&mut self, ui: &mut egui::Ui) {
         if self.customize_param_layout {
-            let mut pending_move = None;
-            self.render_layout_section(ui, "常用", ParamSection::Common, &mut pending_move);
-            ui.add_space(8.0);
-            self.render_layout_section(ui, "其他参数", ParamSection::Other, &mut pending_move);
-            ui.add_space(8.0);
-            self.render_layout_section(ui, "额外参数", ParamSection::Extra, &mut pending_move);
-            if let Some((dragged, section, before)) = pending_move {
-                self.apply_param_move(dragged, section, before);
+            if self.dragging_param.is_some() {
+                let viewport = ui.clip_rect();
+                if let Some(pointer) = ui.ctx().pointer_interact_pos() {
+                    if pointer.x >= viewport.left() - 24.0 && pointer.x <= viewport.right() + 24.0 {
+                        let delta_time = ui.ctx().input(|input| input.stable_dt);
+                        let scroll_delta = drag_auto_scroll_delta(
+                            pointer.y,
+                            viewport.top(),
+                            viewport.bottom(),
+                            delta_time,
+                        );
+                        if scroll_delta != 0.0 {
+                            ui.scroll_with_delta_animation(
+                                egui::vec2(0.0, scroll_delta),
+                                egui::style::ScrollAnimation::none(),
+                            );
+                            ui.ctx().request_repaint();
+                        }
+                    }
+                }
             }
-            if !ui.ctx().input(|input| input.pointer.primary_down()) {
-                self.dragging_param = None;
+            let mut drop_target = None;
+            self.render_layout_section(ui, "常用", ParamSection::Common, &mut drop_target);
+            ui.add_space(8.0);
+            self.render_layout_section(ui, "其他参数", ParamSection::Other, &mut drop_target);
+            ui.add_space(8.0);
+            self.render_layout_section(ui, "额外参数", ParamSection::Extra, &mut drop_target);
+            if ui
+                .ctx()
+                .input(|input| input.pointer.button_released(PointerButton::Primary))
+            {
+                if let (Some(dragged), Some(target)) = (self.dragging_param.take(), drop_target) {
+                    self.apply_param_move(dragged, target);
+                } else {
+                    self.dragging_param = None;
+                }
             }
         } else {
             self.render_normal_section(ui, "常用", ParamSection::Common);
@@ -1954,10 +2137,16 @@ impl eframe::App for LauncherApp {
                                     ui.add_space(8.0);
                                     let params_height = (ui.available_height() - 8.0).max(260.0);
                                     Self::recessed_frame().show(ui, |ui| {
+                                        self.params_toolbar_ui(ui);
+                                        ui.add_space(6.0);
+                                        ui.separator();
+                                        ui.add_space(4.0);
+                                        let content_height =
+                                            (params_height - ui.min_rect().height()).max(180.0);
                                         egui::ScrollArea::vertical()
-                                            .max_height(params_height)
+                                            .max_height(content_height)
                                             .show(ui, |ui| {
-                                                self.params_ui(ui);
+                                                self.params_content_ui(ui);
                                             });
                                     });
                                 },
@@ -2011,5 +2200,185 @@ impl eframe::App for LauncherApp {
         self.show_rename_popup(ctx);
         self.show_draft_picker(ctx);
         self.show_server_log_window(ctx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn builtin(name: &str) -> ParamRow {
+        ParamRow::Builtin(name.to_string())
+    }
+
+    fn sample_sections() -> [(ParamSection, Vec<ParamRow>); 3] {
+        [
+            (
+                ParamSection::Common,
+                vec![builtin("a"), builtin("b"), builtin("c")],
+            ),
+            (ParamSection::Other, vec![builtin("d")]),
+            (ParamSection::Extra, Vec::new()),
+        ]
+    }
+
+    #[test]
+    fn moves_rows_up_and_down_in_the_same_section() {
+        let mut sections = sample_sections();
+        assert!(move_param_row(
+            &mut sections,
+            &builtin("a"),
+            ParamDropTarget {
+                section: ParamSection::Common,
+                index: 3,
+            },
+        ));
+        assert_eq!(
+            sections[0].1,
+            vec![builtin("b"), builtin("c"), builtin("a")]
+        );
+
+        assert!(move_param_row(
+            &mut sections,
+            &builtin("a"),
+            ParamDropTarget {
+                section: ParamSection::Common,
+                index: 0,
+            },
+        ));
+        assert_eq!(
+            sections[0].1,
+            vec![builtin("a"), builtin("b"), builtin("c")]
+        );
+    }
+
+    #[test]
+    fn moves_rows_between_sections_and_appends_to_empty_section() {
+        let mut sections = sample_sections();
+        assert!(move_param_row(
+            &mut sections,
+            &builtin("b"),
+            ParamDropTarget {
+                section: ParamSection::Other,
+                index: 1,
+            },
+        ));
+        assert_eq!(sections[0].1, vec![builtin("a"), builtin("c")]);
+        assert_eq!(sections[1].1, vec![builtin("d"), builtin("b")]);
+
+        sections[0].1.push(ParamRow::Extra(7));
+        assert!(move_param_row(
+            &mut sections,
+            &ParamRow::Extra(7),
+            ParamDropTarget {
+                section: ParamSection::Extra,
+                index: 0,
+            },
+        ));
+        assert_eq!(sections[2].1, vec![ParamRow::Extra(7)]);
+    }
+
+    #[test]
+    fn rejects_invalid_moves_and_missing_rows() {
+        let mut sections = sample_sections();
+        let original = sections.clone();
+        assert!(!move_param_row(
+            &mut sections,
+            &builtin("a"),
+            ParamDropTarget {
+                section: ParamSection::Extra,
+                index: 0,
+            },
+        ));
+        assert!(!move_param_row(
+            &mut sections,
+            &builtin("missing"),
+            ParamDropTarget {
+                section: ParamSection::Other,
+                index: 0,
+            },
+        ));
+        assert_eq!(sections, original);
+    }
+
+    #[test]
+    fn a_move_collapses_duplicate_source_rows() {
+        let mut sections = sample_sections();
+        sections[1].1.push(builtin("a"));
+        assert!(move_param_row(
+            &mut sections,
+            &builtin("a"),
+            ParamDropTarget {
+                section: ParamSection::Other,
+                index: 0,
+            },
+        ));
+        let count = sections
+            .iter()
+            .flat_map(|(_, rows)| rows)
+            .filter(|row| **row == builtin("a"))
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn copying_layout_does_not_overwrite_parameter_values() {
+        let mut source = Preset::default();
+        source.port = "9000".to_string();
+        source.parameter_layout.common.swap(0, 1);
+        source.extra_params.push(ExtraParam {
+            id: 7,
+            text: "--source".to_string(),
+            section: ParamSection::Common,
+            position: 1,
+            ..ExtraParam::default()
+        });
+        let mut target = Preset::default();
+        target.port = "8081".to_string();
+        target.extra_params.push(ExtraParam {
+            id: 7,
+            text: "--target".to_string(),
+            ..ExtraParam::default()
+        });
+
+        copy_preset_layout(&source, &mut target);
+
+        assert_eq!(target.port, "8081");
+        assert_eq!(target.extra_params[0].text, "--target");
+        assert_eq!(target.extra_params[0].section, ParamSection::Common);
+        assert_eq!(target.extra_params[0].position, 1);
+        assert_eq!(target.parameter_layout, source.parameter_layout);
+    }
+
+    #[test]
+    fn restoring_one_preset_does_not_change_another() {
+        let mut active = Preset::default();
+        active.parameter_layout.common.swap(0, 1);
+        active.extra_params.push(ExtraParam {
+            id: 1,
+            section: ParamSection::Common,
+            position: 0,
+            ..ExtraParam::default()
+        });
+        let other = active.clone();
+
+        restore_preset_layout(&mut active);
+
+        assert_eq!(active.parameter_layout, ParameterLayout::default());
+        assert_eq!(active.extra_params[0].section, ParamSection::Extra);
+        assert_ne!(active.parameter_layout, other.parameter_layout);
+        assert_eq!(other.extra_params[0].section, ParamSection::Common);
+    }
+
+    #[test]
+    fn drag_auto_scrolls_toward_nearby_edges() {
+        let top_delta = drag_auto_scroll_delta(4.0, 0.0, 300.0, 0.01);
+        let bottom_delta = drag_auto_scroll_delta(296.0, 0.0, 300.0, 0.01);
+
+        assert!(top_delta > 0.0);
+        assert!(bottom_delta < 0.0);
+        assert_eq!(drag_auto_scroll_delta(150.0, 0.0, 300.0, 0.01), 0.0);
+        assert!(top_delta.abs() <= 7.6);
+        assert!(bottom_delta.abs() <= 7.6);
     }
 }
