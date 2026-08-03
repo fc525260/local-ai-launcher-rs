@@ -17,6 +17,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -39,8 +41,41 @@ jobs:
           name: local-ai-launcher-windows
           path: dist/local-ai-launcher.exe
 
+      - name: Generate release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $currentTag = $env:GITHUB_REF_NAME
+          $previousTag = git tag --sort=-version:refname | Where-Object { $_ -ne $currentTag } | Select-Object -First 1
+          if ($previousTag) {
+            $range = "$previousTag..$currentTag"
+            $commits = @(git log $range --pretty=format:'- %h %s')
+            $files = @(git diff --name-only $range)
+          } else {
+            $range = $currentTag
+            $commits = @(git log $currentTag --pretty=format:'- %h %s')
+            $files = @(git ls-tree -r --name-only $currentTag)
+          }
+          if ($commits.Count -eq 0) { $commits = @('- 本版本无可列出的提交摘要。') }
+          if ($files.Count -eq 0) {
+            $fileNotes = @('- 本版本无文件变更列表。')
+          } else {
+            $fileNotes = @($files | ForEach-Object { "- ``$_``" })
+          }
+          $notes = @('## 更新内容', '') + $commits
+          $notes += @('', '## 变更文件', '') + $fileNotes
+          $notes += @(
+              '',
+              '## 构建信息',
+              '',
+              '- Windows 静态 CRT 单文件构建。',
+              '- Release 资产：`local-ai-launcher.exe`。'
+            )
+          Set-Content -Path release-notes.md -Value ($notes -join "`n") -Encoding utf8
+
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/local-ai-launcher.exe
+          body_path: release-notes.md
