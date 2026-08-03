@@ -36,7 +36,7 @@ cargo build --release
 target\release\local_ai_launcher.exe
 ```
 
-生成发布用的静态 CRT 单文件并复制到 `dist`：
+生成静态 CRT 单文件并复制到 `dist`：
 
 ```powershell
 $env:RUSTFLAGS='-C target-feature=+crt-static'
@@ -45,23 +45,11 @@ New-Item -ItemType Directory -Force -Path dist | Out-Null
 Copy-Item target\release\local_ai_launcher.exe dist\本地AI启动器.exe -Force
 ```
 
-最终发布文件为 `dist\本地AI启动器.exe`；`target\` 仅包含 Cargo 构建缓存和中间产物，
-不参与发布或 Git 推送。
+生成文件为 `dist\本地AI启动器.exe`。
 
 ## 配置
 
-程序会在 exe 同目录生成 `local-ai-launcher-config.json`。该文件保存本机路径、模型显示设置、预设、draft 草稿模型选择和外观配置，不建议提交到仓库。
-
-## 发布
-
-推送 `v*` 标签会触发 GitHub Actions 自动构建 Windows 单文件 exe，并发布到 GitHub Release。Release 下载资产名为 `local-ai-launcher.exe`：
-
-```powershell
-git tag v0.1.6
-git push origin v0.1.6
-```
-
-也可以在 GitHub Actions 页面手动运行 `Release` 工作流生成构建产物。
+程序会在 exe 同目录生成 `local-ai-launcher-config.json`。该文件保存本机路径、模型显示设置、预设、draft 草稿模型选择和外观配置。
 
 ## 协议
 
