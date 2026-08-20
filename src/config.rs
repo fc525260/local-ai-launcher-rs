@@ -41,6 +41,8 @@ pub const DEFAULT_COMMON_PARAM_IDS: &[&str] = &[
     "spec_type",
     "spec_draft_n_max",
     "spec_draft_n_min",
+    "spec_draft_p_min",
+    "spec_draft_p_split",
     "image_min_tokens",
     "image_max_tokens",
     "jinja",
@@ -52,8 +54,6 @@ pub const DEFAULT_OTHER_PARAM_IDS: &[&str] = &[
     "tensor_split",
     "main_gpu",
     "device",
-    "spec_draft_p_min",
-    "spec_draft_p_split",
     "web_ui",
     "log_timestamps",
     "offline",
@@ -63,6 +63,40 @@ pub const DEFAULT_OTHER_PARAM_IDS: &[&str] = &[
     "swa_full",
     "cpu_moe",
     "reasoning_preserve",
+    "threads_batch",
+    "predict",
+    "keep",
+    "rope_scaling",
+    "rope_scale",
+    "rope_freq_base",
+    "rope_freq_scale",
+    "yarn_orig_ctx",
+    "rpc",
+    "numa",
+    "fit",
+    "check_tensors",
+    "log_file",
+    "spec_draft_threads",
+    "spec_draft_ngl",
+    "spec_draft_device",
+    "seed",
+    "temperature",
+    "top_k",
+    "top_p",
+    "min_p",
+    "repeat_last_n",
+    "repeat_penalty",
+    "presence_penalty",
+    "frequency_penalty",
+    "mirostat",
+    "mirostat_lr",
+    "mirostat_ent",
+    "grammar_file",
+    "json_schema",
+    "system_prompt",
+    "reverse_prompt",
+    "context_shift",
+    "show_timings",
 ];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,6 +117,16 @@ pub enum ParamSection {
     Extra,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtraParamKind {
+    #[default]
+    FreeText,
+    FlagValue,
+    FlagToggle,
+    FlagChoice,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ExtraParam {
@@ -91,6 +135,10 @@ pub struct ExtraParam {
     pub enabled: bool,
     pub section: ParamSection,
     pub position: usize,
+    pub kind: ExtraParamKind,
+    pub flag: String,
+    pub value: String,
+    pub choices: Vec<String>,
 }
 
 impl Default for ExtraParam {
@@ -101,6 +149,10 @@ impl Default for ExtraParam {
             enabled: true,
             section: ParamSection::Extra,
             position: usize::MAX,
+            kind: ExtraParamKind::FreeText,
+            flag: String::new(),
+            value: String::new(),
+            choices: Vec::new(),
         }
     }
 }
@@ -133,6 +185,9 @@ pub struct Preset {
     pub ngl: String,
     pub n_cpu_moe: String,
     pub threads: String,
+    pub threads_batch: String,
+    pub predict: String,
+    pub keep: String,
     pub batch_size: String,
     pub ubatch_size: String,
     pub parallel: String,
@@ -144,6 +199,9 @@ pub struct Preset {
     pub spec_type: String,
     pub spec_draft_n_max: String,
     pub spec_draft_n_min: String,
+    pub spec_draft_threads: String,
+    pub spec_draft_ngl: String,
+    pub spec_draft_device: String,
     pub spec_draft_p_min: String,
     pub spec_draft_p_split: String,
     pub image_min_tokens: String,
@@ -156,6 +214,31 @@ pub struct Preset {
     pub device: String,
     pub load_mode: String,
     pub flash_attn: String,
+    pub rope_scaling: String,
+    pub rope_scale: String,
+    pub rope_freq_base: String,
+    pub rope_freq_scale: String,
+    pub yarn_orig_ctx: String,
+    pub rpc: String,
+    pub numa: String,
+    pub fit: String,
+    pub log_file: String,
+    pub seed: String,
+    pub temperature: String,
+    pub top_k: String,
+    pub top_p: String,
+    pub min_p: String,
+    pub repeat_last_n: String,
+    pub repeat_penalty: String,
+    pub presence_penalty: String,
+    pub frequency_penalty: String,
+    pub mirostat: String,
+    pub mirostat_lr: String,
+    pub mirostat_ent: String,
+    pub grammar_file: String,
+    pub json_schema: String,
+    pub system_prompt: String,
+    pub reverse_prompt: String,
     pub web_ui: ToggleState,
     pub log_timestamps: ToggleState,
     pub offline: ToggleState,
@@ -166,6 +249,9 @@ pub struct Preset {
     pub cpu_moe: ToggleState,
     pub jinja: ToggleState,
     pub reasoning_preserve: ToggleState,
+    pub check_tensors: ToggleState,
+    pub context_shift: ToggleState,
+    pub show_timings: ToggleState,
     pub parameter_layout: ParameterLayout,
     pub extra_params: Vec<ExtraParam>,
 }
@@ -176,29 +262,60 @@ impl Default for Preset {
             ngl: "100".to_string(),
             n_cpu_moe: "999".to_string(),
             threads: "12".to_string(),
+            threads_batch: String::new(),
+            predict: String::new(),
+            keep: String::new(),
             batch_size: "512".to_string(),
             ubatch_size: "256".to_string(),
             parallel: "1".to_string(),
             ctx_size: "65536".to_string(),
-            timeout: "3600".to_string(),
+            timeout: String::new(),
             alias: String::new(),
             cache_type_k: String::new(),
             cache_type_v: String::new(),
             spec_type: String::new(),
             spec_draft_n_max: String::new(),
             spec_draft_n_min: String::new(),
+            spec_draft_threads: String::new(),
+            spec_draft_ngl: String::new(),
+            spec_draft_device: String::new(),
             spec_draft_p_min: String::new(),
             spec_draft_p_split: String::new(),
             image_min_tokens: String::new(),
             image_max_tokens: String::new(),
             host: "127.0.0.1".to_string(),
-            port: "8080".to_string(),
+            port: "9931".to_string(),
             split_mode: String::new(),
             tensor_split: String::new(),
             main_gpu: String::new(),
             device: String::new(),
-            load_mode: String::new(),
-            flash_attn: String::new(),
+            load_mode: "mmap".to_string(),
+            flash_attn: "on".to_string(),
+            rope_scaling: String::new(),
+            rope_scale: String::new(),
+            rope_freq_base: String::new(),
+            rope_freq_scale: String::new(),
+            yarn_orig_ctx: String::new(),
+            rpc: String::new(),
+            numa: String::new(),
+            fit: String::new(),
+            log_file: String::new(),
+            seed: String::new(),
+            temperature: String::new(),
+            top_k: String::new(),
+            top_p: String::new(),
+            min_p: String::new(),
+            repeat_last_n: String::new(),
+            repeat_penalty: String::new(),
+            presence_penalty: String::new(),
+            frequency_penalty: String::new(),
+            mirostat: String::new(),
+            mirostat_lr: String::new(),
+            mirostat_ent: String::new(),
+            grammar_file: String::new(),
+            json_schema: String::new(),
+            system_prompt: String::new(),
+            reverse_prompt: String::new(),
             web_ui: ToggleState::Default,
             log_timestamps: ToggleState::Default,
             offline: ToggleState::Default,
@@ -209,6 +326,9 @@ impl Default for Preset {
             cpu_moe: ToggleState::Default,
             jinja: ToggleState::Enabled,
             reasoning_preserve: ToggleState::Default,
+            check_tensors: ToggleState::Default,
+            context_shift: ToggleState::Default,
+            show_timings: ToggleState::Default,
             parameter_layout: ParameterLayout::default(),
             extra_params: Vec::new(),
         }
@@ -363,13 +483,7 @@ fn migrate_preset_value(value: &mut Value) {
         let Some(old) = preset.get(field).and_then(Value::as_bool) else {
             continue;
         };
-        let state = if old {
-            "enabled"
-        } else if matches!(field, "web_ui" | "log_timestamps" | "kv_offload") {
-            "disabled"
-        } else {
-            "default"
-        };
+        let state = if old { "enabled" } else { "default" };
         preset.insert(field.to_string(), Value::from(state));
     }
 
@@ -447,6 +561,19 @@ fn normalize_preset_choices(preset: &mut Preset) {
     if !preset.spec_type.is_empty() && !SPEC_TYPES.contains(&preset.spec_type.as_str()) {
         preset.spec_type.clear();
     }
+    use crate::parameters::{FIT_MODES, MIROSTAT_MODES, NUMA_TYPES, ROPE_SCALINGS};
+    if !preset.rope_scaling.is_empty() && !ROPE_SCALINGS.contains(&preset.rope_scaling.as_str()) {
+        preset.rope_scaling.clear();
+    }
+    if !preset.numa.is_empty() && !NUMA_TYPES.contains(&preset.numa.as_str()) {
+        preset.numa.clear();
+    }
+    if !preset.fit.is_empty() && !FIT_MODES.contains(&preset.fit.as_str()) {
+        preset.fit.clear();
+    }
+    if !preset.mirostat.is_empty() && !MIROSTAT_MODES.contains(&preset.mirostat.as_str()) {
+        preset.mirostat.clear();
+    }
 }
 
 fn normalize_parameter_layout(layout: &mut ParameterLayout) {
@@ -519,10 +646,10 @@ mod tests {
         let preset: Preset = serde_json::from_value(value).expect("migrated preset");
 
         assert_eq!(preset.load_mode, "mmap+mlock");
-        assert_eq!(preset.web_ui, ToggleState::Disabled);
+        assert_eq!(preset.web_ui, ToggleState::Default);
         assert_eq!(preset.log_timestamps, ToggleState::Enabled);
         assert_eq!(preset.offline, ToggleState::Default);
-        assert_eq!(preset.kv_offload, ToggleState::Disabled);
+        assert_eq!(preset.kv_offload, ToggleState::Default);
         assert_eq!(preset.jinja, ToggleState::Enabled);
         assert_eq!(preset.extra_params.len(), 2);
         assert_eq!(preset.extra_params[1].text, "--bar \"two words\"");
@@ -609,7 +736,7 @@ mod tests {
         assert_eq!(preset.web_ui, ToggleState::Default);
         assert_eq!(preset.log_timestamps, ToggleState::Default);
         assert_eq!(preset.kv_offload, ToggleState::Default);
-        assert!(preset.load_mode.is_empty());
-        assert!(preset.flash_attn.is_empty());
+        assert_eq!(preset.load_mode, "mmap");
+        assert_eq!(preset.flash_attn, "on");
     }
 }

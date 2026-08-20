@@ -1,4 +1,4 @@
-use crate::config::{Preset, ToggleState};
+use crate::config::{ExtraParamKind, Preset, ToggleState};
 use crate::discovery::ModelInfo;
 use crate::parameters::{parameter, ParamId};
 use std::path::{Path, PathBuf};
@@ -89,6 +89,9 @@ pub fn build_args(
         push_param_pair(&mut args, ParamId::NCpuMoe, &preset.n_cpu_moe);
     }
     push_param_pair(&mut args, ParamId::Threads, &preset.threads);
+    push_param_pair(&mut args, ParamId::ThreadsBatch, &preset.threads_batch);
+    push_param_pair(&mut args, ParamId::Predict, &preset.predict);
+    push_param_pair(&mut args, ParamId::Keep, &preset.keep);
     push_param_pair(&mut args, ParamId::BatchSize, &preset.batch_size);
     push_param_pair(&mut args, ParamId::UbatchSize, &preset.ubatch_size);
     push_param_pair(&mut args, ParamId::Parallel, &preset.parallel);
@@ -104,6 +107,17 @@ pub fn build_args(
     }
     push_param_pair(&mut args, ParamId::SpecDraftNMax, &preset.spec_draft_n_max);
     push_param_pair(&mut args, ParamId::SpecDraftNMin, &preset.spec_draft_n_min);
+    push_param_pair(
+        &mut args,
+        ParamId::SpecDraftThreads,
+        &preset.spec_draft_threads,
+    );
+    push_param_pair(&mut args, ParamId::SpecDraftNgl, &preset.spec_draft_ngl);
+    push_param_pair(
+        &mut args,
+        ParamId::SpecDraftDevice,
+        &preset.spec_draft_device,
+    );
     push_param_pair(&mut args, ParamId::SpecDraftPMin, &preset.spec_draft_p_min);
     push_param_pair(
         &mut args,
@@ -122,6 +136,39 @@ pub fn build_args(
     push_param_pair(&mut args, ParamId::Device, &preset.device);
     push_param_pair(&mut args, ParamId::LoadMode, &preset.load_mode);
     push_param_pair(&mut args, ParamId::FlashAttn, &preset.flash_attn);
+    push_param_pair(&mut args, ParamId::RopeScaling, &preset.rope_scaling);
+    push_param_pair(&mut args, ParamId::RopeScale, &preset.rope_scale);
+    push_param_pair(&mut args, ParamId::RopeFreqBase, &preset.rope_freq_base);
+    push_param_pair(&mut args, ParamId::RopeFreqScale, &preset.rope_freq_scale);
+    push_param_pair(&mut args, ParamId::YarnOrigCtx, &preset.yarn_orig_ctx);
+    push_param_pair(&mut args, ParamId::Rpc, &preset.rpc);
+    push_param_pair(&mut args, ParamId::Numa, &preset.numa);
+    push_param_pair(&mut args, ParamId::Fit, &preset.fit);
+    push_param_pair(&mut args, ParamId::LogFile, &preset.log_file);
+    push_param_pair(&mut args, ParamId::Seed, &preset.seed);
+    push_param_pair(&mut args, ParamId::Temperature, &preset.temperature);
+    push_param_pair(&mut args, ParamId::TopK, &preset.top_k);
+    push_param_pair(&mut args, ParamId::TopP, &preset.top_p);
+    push_param_pair(&mut args, ParamId::MinP, &preset.min_p);
+    push_param_pair(&mut args, ParamId::RepeatLastN, &preset.repeat_last_n);
+    push_param_pair(&mut args, ParamId::RepeatPenalty, &preset.repeat_penalty);
+    push_param_pair(
+        &mut args,
+        ParamId::PresencePenalty,
+        &preset.presence_penalty,
+    );
+    push_param_pair(
+        &mut args,
+        ParamId::FrequencyPenalty,
+        &preset.frequency_penalty,
+    );
+    push_param_pair(&mut args, ParamId::Mirostat, &preset.mirostat);
+    push_param_pair(&mut args, ParamId::MirostatLr, &preset.mirostat_lr);
+    push_param_pair(&mut args, ParamId::MirostatEnt, &preset.mirostat_ent);
+    push_param_pair(&mut args, ParamId::GrammarFile, &preset.grammar_file);
+    push_param_pair(&mut args, ParamId::JsonSchema, &preset.json_schema);
+    push_param_pair(&mut args, ParamId::SystemPrompt, &preset.system_prompt);
+    push_param_pair(&mut args, ParamId::ReversePrompt, &preset.reverse_prompt);
 
     push_toggle(&mut args, preset.web_ui, ParamId::WebUi);
     push_toggle(&mut args, preset.log_timestamps, ParamId::LogTimestamps);
@@ -136,13 +183,34 @@ pub fn build_args(
         preset.reasoning_preserve,
         ParamId::ReasoningPreserve,
     );
-    for item in preset
-        .extra_params
-        .iter()
-        .filter(|item| item.enabled && !item.text.trim().is_empty())
-    {
-        if let Ok(parts) = parse_extra_args(&item.text) {
-            args.extend(parts);
+    push_toggle(&mut args, preset.check_tensors, ParamId::CheckTensors);
+    push_toggle(&mut args, preset.context_shift, ParamId::ContextShift);
+    push_toggle(&mut args, preset.show_timings, ParamId::ShowTimings);
+    for item in preset.extra_params.iter().filter(|item| {
+        item.enabled
+            && match item.kind {
+                ExtraParamKind::FreeText => !item.text.trim().is_empty(),
+                ExtraParamKind::FlagValue | ExtraParamKind::FlagChoice => {
+                    !item.flag.trim().is_empty() && !item.value.trim().is_empty()
+                }
+                ExtraParamKind::FlagToggle => !item.flag.trim().is_empty(),
+            }
+    }) {
+        match item.kind {
+            ExtraParamKind::FreeText => {
+                if let Ok(parts) = parse_extra_args(&item.text) {
+                    args.extend(parts);
+                }
+            }
+            ExtraParamKind::FlagValue | ExtraParamKind::FlagChoice => {
+                if !item.value.trim().is_empty() {
+                    args.push(item.flag.trim().to_string());
+                    args.push(item.value.trim().to_string());
+                }
+            }
+            ExtraParamKind::FlagToggle => {
+                args.push(item.flag.trim().to_string());
+            }
         }
     }
     args
@@ -434,6 +502,70 @@ mod tests {
 
         assert!(args.contains(&"--cpu-moe".to_string()));
         assert!(!args.contains(&"--n-cpu-moe".to_string()));
+    }
+
+    #[test]
+    fn emits_new_builtin_parameters() {
+        let model = ModelInfo {
+            id: "main".to_string(),
+            rel_path: "main.gguf".to_string(),
+            display_name: "main".to_string(),
+            size_label: String::new(),
+            mmproj: None,
+            draft_model: None,
+        };
+        let preset = Preset {
+            threads_batch: "4".to_string(),
+            predict: "256".to_string(),
+            keep: "64".to_string(),
+            rope_scaling: "yarn".to_string(),
+            rpc: "192.168.1.5:50052".to_string(),
+            numa: "distribute".to_string(),
+            seed: "42".to_string(),
+            temperature: "0.7".to_string(),
+            top_k: "50".to_string(),
+            top_p: "0.9".to_string(),
+            min_p: "0.1".to_string(),
+            repeat_penalty: "1.1".to_string(),
+            mirostat: "2".to_string(),
+            grammar_file: "json.gbnf".to_string(),
+            json_schema: "{}".to_string(),
+            system_prompt: "你是助手".to_string(),
+            reverse_prompt: "User:".to_string(),
+            spec_draft_ngl: "5".to_string(),
+            show_timings: ToggleState::Enabled,
+            check_tensors: ToggleState::Enabled,
+            ..Default::default()
+        };
+        let args = build_args(&model, &preset, Path::new("C:\\models"), false, None);
+
+        for (flag, value) in [
+            ("--threads-batch", "4"),
+            ("--predict", "256"),
+            ("--keep", "64"),
+            ("--rope-scaling", "yarn"),
+            ("--rpc", "192.168.1.5:50052"),
+            ("--numa", "distribute"),
+            ("--seed", "42"),
+            ("--temperature", "0.7"),
+            ("--top-k", "50"),
+            ("--top-p", "0.9"),
+            ("--min-p", "0.1"),
+            ("--repeat-penalty", "1.1"),
+            ("--mirostat", "2"),
+            ("--grammar-file", "json.gbnf"),
+            ("--json-schema", "{}"),
+            ("--system-prompt", "你是助手"),
+            ("--reverse-prompt", "User:"),
+            ("--spec-draft-ngl", "5"),
+        ] {
+            assert!(
+                args.windows(2).any(|pair| pair == [flag, value]),
+                "missing pair {flag} {value}"
+            );
+        }
+        assert!(args.contains(&"--show-timings".to_string()));
+        assert!(args.contains(&"--check-tensors".to_string()));
     }
 
     #[test]
